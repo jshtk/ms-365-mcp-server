@@ -3411,6 +3411,196 @@ describe('graph-tools', () => {
     });
   });
 
+  // ---- 9c. list-planner-tasks-with-plan-names utility tool ----
+  describe('list-planner-tasks-with-plan-names', () => {
+    const jsonResponse = (body: unknown, meta?: Record<string, unknown>) => ({
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+      ...(meta ? { _meta: meta } : {}),
+    });
+
+    function plannerClient(overrides: Record<string, unknown> = {}) {
+      const byPath: Record<string, unknown> = {
+        '/me/planner/tasks': jsonResponse(
+          {
+            value: [
+              {
+                id: 't1',
+                title: 'A',
+                planId: 'p1',
+                bucketId: 'b1',
+                percentComplete: 0,
+                priority: 5,
+                assignments: { u1: {} },
+              },
+              {
+                id: 't2',
+                title: 'B',
+                planId: 'p1',
+                bucketId: 'b2',
+                percentComplete: 50,
+                priority: 1,
+                assignments: {},
+              },
+              {
+                id: 't3',
+                title: 'C',
+                planId: 'p2',
+                bucketId: 'b3',
+                percentComplete: 100,
+                priority: 9,
+                assignments: {},
+              },
+            ],
+          },
+          { http_status: 200 }
+        ),
+        '/planner/plans/p1': jsonResponse({ id: 'p1', title: 'Plan One' }),
+        '/planner/plans/p2': jsonResponse({ id: 'p2', title: 'Plan Two' }),
+        '/planner/buckets/b1': jsonResponse({ id: 'b1', name: 'Bucket One' }),
+        '/planner/buckets/b2': jsonResponse({ id: 'b2', name: 'Bucket Two' }),
+        '/planner/buckets/b3': jsonResponse({ id: 'b3', name: 'Bucket Three' }),
+        ...overrides,
+      };
+      return {
+        graphRequest: vi.fn().mockImplementation(async (path: string) => {
+          const response = byPath[path];
+          if (!response) throw new Error(`unexpected path ${path}`);
+          return response;
+        }),
+      };
+    }
+
+    async function setup(graphClient: any) {
+      mockEndpoints.length = 0;
+      mockEndpointsJson = [];
+      const server = createMockServer();
+      const { registerGraphTools } = await loadModule();
+      registerGraphTools(server as any, graphClient as any);
+      const tool = server.tools.get('list-planner-tasks-with-plan-names');
+      expect(tool).toBeDefined();
+      return tool!;
+    }
+
+    it('resolves each plan and bucket once and omits completed tasks by default', async () => {
+      const graphClient = plannerClient();
+      const tool = await setup(graphClient);
+
+      const result = await tool.handler({});
+      const payload = JSON.parse(result.content[0].text);
+
+      expect(payload.returnedTasks).toBe(2);
+      expect(payload.totalTasks).toBe(3);
+      expect(payload.tasks.map((t: any) => t.id)).toEqual(['t1', 't2']);
+      expect(payload.tasks[0]).toMatchObject({
+        planTitle: 'Plan One',
+        bucketName: 'Bucket One',
+        assigneeCount: 1,
+        dueDateTime: null,
+      });
+      expect(payload.tasks[1]).toMatchObject({ planTitle: 'Plan One', bucketName: 'Bucket Two' });
+      expect(payload.plans).toEqual([{ id: 'p1', title: 'Plan One' }]);
+      expect(payload.unresolved).toEqual({ plans: [], buckets: [] });
+
+      // One list call, one lookup per distinct plan/bucket of the returned tasks —
+      // the completed task's plan p2 and bucket b3 are never fetched.
+      const paths = graphClient.graphRequest.mock.calls.map((call: any[]) => call[0] as string);
+      expect(paths).toHaveLength(4);
+      expect(paths.filter((p: string) => p === '/planner/plans/p1')).toHaveLength(1);
+      expect(paths).not.toContain('/planner/plans/p2');
+      expect(paths).not.toContain('/planner/buckets/b3');
+
+      // Every request forces JSON so the merge works under --toon.
+      for (const [, opts] of graphClient.graphRequest.mock.calls) {
+        expect(opts?.forceJsonOutput).toBe(true);
+      }
+
+      expect(result._meta).toMatchObject({ http_status: 200 });
+      expect(auditLogMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'tool.call',
+          tool: 'list-planner-tasks-with-plan-names',
+          status: 'success',
+        })
+      );
+    });
+
+    it('includes completed tasks and filters by planId when asked', async () => {
+      const graphClient = plannerClient();
+      const tool = await setup(graphClient);
+
+      const result = await tool.handler({ includeCompleted: true, planId: 'p2' });
+      const payload = JSON.parse(result.content[0].text);
+
+      expect(payload.tasks.map((t: any) => t.id)).toEqual(['t3']);
+      expect(payload.tasks[0]).toMatchObject({
+        planTitle: 'Plan Two',
+        bucketName: 'Bucket Three',
+        percentComplete: 100,
+      });
+    });
+
+    it('keeps the task and reports the id as unresolved when a plan lookup fails', async () => {
+      const graphClient = plannerClient({
+        '/planner/plans/p1': {
+          content: [{ type: 'text', text: JSON.stringify({ error: 'Forbidden' }) }],
+          isError: true,
+          _meta: { http_status: 403 },
+        },
+      });
+      const tool = await setup(graphClient);
+
+      const result = await tool.handler({});
+      expect(result.isError).toBeUndefined();
+      const payload = JSON.parse(result.content[0].text);
+
+      expect(payload.tasks).toHaveLength(2);
+      expect(payload.tasks[0].planTitle).toBeNull();
+      expect(payload.tasks[0].bucketName).toBe('Bucket One');
+      expect(payload.unresolved).toEqual({ plans: ['p1'], buckets: [] });
+    });
+
+    it('follows @odata.nextLink on the task list with the version prefix stripped', async () => {
+      const graphClient = plannerClient({
+        '/me/planner/tasks': jsonResponse({
+          value: [{ id: 't1', title: 'A', planId: 'p1', bucketId: 'b1', percentComplete: 0 }],
+          '@odata.nextLink': 'https://graph.microsoft.com/v1.0/me/planner/tasks?$skiptoken=abc',
+        }),
+        '/me/planner/tasks?$skiptoken=abc': jsonResponse({
+          value: [{ id: 't2', title: 'B', planId: 'p1', bucketId: 'b2', percentComplete: 0 }],
+        }),
+      });
+      const tool = await setup(graphClient);
+
+      const payload = JSON.parse((await tool.handler({})).content[0].text);
+      expect(payload.tasks.map((t: any) => t.id)).toEqual(['t1', 't2']);
+      const paths = graphClient.graphRequest.mock.calls.map((call: any[]) => call[0] as string);
+      expect(paths).toContain('/me/planner/tasks?$skiptoken=abc');
+    });
+
+    it('surfaces a Graph error on the task list unchanged', async () => {
+      const graphClient = plannerClient({
+        '/me/planner/tasks': {
+          content: [{ type: 'text', text: JSON.stringify({ error: 'Unauthorized' }) }],
+          isError: true,
+          _meta: { http_status: 401 },
+        },
+      });
+      const tool = await setup(graphClient);
+
+      const result = await tool.handler({});
+      expect(result.isError).toBe(true);
+      expect(result._meta).toMatchObject({ http_status: 401 });
+      expect(graphClient.graphRequest).toHaveBeenCalledTimes(1);
+      expect(auditLogMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tool: 'list-planner-tasks-with-plan-names',
+          status: 'error',
+          http_status: 401,
+        })
+      );
+    });
+  });
+
   // ---- 10. Utility tools surface in --discovery mode ----
   describe('allowed scopes filtering', () => {
     it('registerGraphTools hides Graph tools outside the allowed scopes', async () => {

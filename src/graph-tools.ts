@@ -1131,6 +1131,42 @@ async function mintDownloadUrl(
   };
 }
 
+// list-planner-tasks-with-plan-names: /me/planner/tasks only holds the user's own
+// assignments, so 20 pages is far beyond any real workload; the cap just guards against a
+// nextLink loop. Four parallel lookups stay well under Planner's throttling limits.
+const PLANNER_RESOLVE_MAX_PAGES = 20;
+const PLANNER_RESOLVE_CONCURRENCY = 4;
+
+function parseJsonText(text: unknown): unknown {
+  if (typeof text !== 'string') return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 export const UTILITY_TOOLS: readonly UtilityTool[] = [
   {
     name: 'parse-teams-url',
@@ -1670,6 +1706,159 @@ export const UTILITY_TOOLS: readonly UtilityTool[] = [
             },
           ],
           _meta: response._meta,
+        };
+      } catch (error) {
+        const metadata = thrownErrorAuditFields(error);
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: (error as Error).message }) }],
+          isError: true,
+          ...(Object.keys(metadata).length > 0 ? { _meta: metadata } : {}),
+        };
+      }
+    },
+  },
+  {
+    name: 'list-planner-tasks-with-plan-names',
+    method: 'GET',
+    path: 'tool:list-planner-tasks-with-plan-names',
+    searchKeywords:
+      'planner my tasks open tasks assigned to me plan name plan title bucket name resolved tasks overview todo',
+    description:
+      'List the Planner tasks assigned to the signed-in user (/me/planner/tasks) with the plan title and bucket name already resolved on every task. Use this instead of list-planner-tasks followed by one get-planner-plan / get-planner-bucket call per task: each distinct plan and bucket is fetched exactly once server-side. Returns { tasks: [{ id, title, planId, planTitle, bucketId, bucketName, percentComplete, priority, dueDateTime, startDateTime, completedDateTime, createdDateTime, assigneeCount }], plans: [{ id, title }], unresolved: { plans: [id], buckets: [id] }, totalTasks, returnedTasks }. Completed tasks (percentComplete 100) are omitted unless includeCompleted=true. Priority values: 0=Urgent, 1=Important, 3=Medium, 5=Low, 9=unset. Task ids are the plannerTask ids accepted by get-planner-task and update-planner-task.',
+    readOnlyHint: true,
+    openWorldHint: true,
+    buildSchema: (ctx) => {
+      const schema: Record<string, z.ZodTypeAny> = {
+        includeCompleted: z
+          .boolean()
+          .optional()
+          .describe('Include tasks with percentComplete 100. Default false.'),
+        planId: z
+          .string()
+          .optional()
+          .describe('Only return tasks belonging to this plan id (filtered server-side).'),
+      };
+      if (ctx.multiAccount) {
+        schema['account'] = z
+          .string()
+          .optional()
+          .describe(
+            'Account to use when multiple Microsoft accounts are configured. Required when multiple accounts exist (see list-accounts).'
+          );
+      }
+      return schema;
+    },
+    execute: async (params, { graphClient, authManager }) => {
+      const includeCompleted = params.includeCompleted === true;
+      const planFilter = isNonEmptyString(params.planId) ? params.planId : undefined;
+      const accountParam = params.account as string | undefined;
+      try {
+        const accountModeError = await checkAccountParamInBearerMode(accountParam, authManager);
+        if (accountModeError) {
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ error: accountModeError }) }],
+            isError: true,
+          };
+        }
+        let accountAccessToken: string | undefined;
+        if (authManager && !authManager.isOAuthModeEnabled() && !getRequestTokens()) {
+          accountAccessToken = await authManager.getTokenForAccount(accountParam);
+        }
+        const requestOptions = { accessToken: accountAccessToken, forceJsonOutput: true };
+
+        // Page through /me/planner/tasks. Graph returns @odata.nextLink as an absolute,
+        // version-qualified URL; strip the version so graphRequest re-applies its own.
+        const tasks: Record<string, unknown>[] = [];
+        let firstMeta: CallToolResult['_meta'] | undefined;
+        let nextPath: string | undefined = '/me/planner/tasks';
+        let pageCount = 0;
+        while (nextPath && pageCount < PLANNER_RESOLVE_MAX_PAGES) {
+          const response = await graphClient.graphRequest(nextPath, requestOptions);
+          if (response?.isError) {
+            return response;
+          }
+          firstMeta = firstMeta ?? response._meta;
+          const page = parseJsonText(response?.content?.[0]?.text);
+          const value = isPlainObject(page) ? page.value : undefined;
+          if (Array.isArray(value)) {
+            for (const item of value) {
+              if (isPlainObject(item)) tasks.push(item);
+            }
+          }
+          const nextLink = isPlainObject(page) ? page['@odata.nextLink'] : undefined;
+          if (isNonEmptyString(nextLink)) {
+            const url = new URL(nextLink);
+            nextPath = url.pathname.replace(/^\/(v1\.0|beta)/, '') + url.search;
+          } else {
+            nextPath = undefined;
+          }
+          pageCount++;
+        }
+
+        const selected = tasks.filter((t) => {
+          if (planFilter && t.planId !== planFilter) return false;
+          if (!includeCompleted && t.percentComplete === 100) return false;
+          return true;
+        });
+
+        // Resolve each distinct plan and bucket exactly once, a few at a time. A failed
+        // lookup must not fail the whole call: the task is still returned and the id is
+        // listed under unresolved, so the model knows the name is missing, not empty.
+        const planIds = [...new Set(selected.map((t) => t.planId).filter(isNonEmptyString))];
+        const bucketIds = [...new Set(selected.map((t) => t.bucketId).filter(isNonEmptyString))];
+        const resolveName = async (
+          path: string,
+          field: 'title' | 'name'
+        ): Promise<string | undefined> => {
+          const response = await graphClient.graphRequest(path, requestOptions);
+          if (response?.isError) return undefined;
+          const body = parseJsonText(response?.content?.[0]?.text);
+          const name = isPlainObject(body) ? body[field] : undefined;
+          return typeof name === 'string' ? name : undefined;
+        };
+        const [planTitles, bucketNames] = await Promise.all([
+          mapWithConcurrency(planIds, PLANNER_RESOLVE_CONCURRENCY, (id) =>
+            resolveName(`/planner/plans/${encodeURIComponent(id)}`, 'title')
+          ),
+          mapWithConcurrency(bucketIds, PLANNER_RESOLVE_CONCURRENCY, (id) =>
+            resolveName(`/planner/buckets/${encodeURIComponent(id)}`, 'name')
+          ),
+        ]);
+        const planTitleById = new Map(planIds.map((id, i) => [id, planTitles[i]]));
+        const bucketNameById = new Map(bucketIds.map((id, i) => [id, bucketNames[i]]));
+
+        const result = {
+          tasks: selected.map((t) => {
+            const assignments = isPlainObject(t.assignments) ? t.assignments : {};
+            return {
+              id: t.id,
+              title: t.title,
+              planId: t.planId,
+              planTitle: isNonEmptyString(t.planId) ? (planTitleById.get(t.planId) ?? null) : null,
+              bucketId: t.bucketId,
+              bucketName: isNonEmptyString(t.bucketId)
+                ? (bucketNameById.get(t.bucketId) ?? null)
+                : null,
+              percentComplete: t.percentComplete,
+              priority: t.priority,
+              dueDateTime: t.dueDateTime ?? null,
+              startDateTime: t.startDateTime ?? null,
+              completedDateTime: t.completedDateTime ?? null,
+              createdDateTime: t.createdDateTime,
+              assigneeCount: Object.keys(assignments).length,
+            };
+          }),
+          plans: planIds.map((id) => ({ id, title: planTitleById.get(id) ?? null })),
+          unresolved: {
+            plans: planIds.filter((id) => planTitleById.get(id) === undefined),
+            buckets: bucketIds.filter((id) => bucketNameById.get(id) === undefined),
+          },
+          totalTasks: tasks.length,
+          returnedTasks: selected.length,
+        };
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+          ...(firstMeta ? { _meta: firstMeta } : {}),
         };
       } catch (error) {
         const metadata = thrownErrorAuditFields(error);
