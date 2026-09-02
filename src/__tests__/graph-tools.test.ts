@@ -3411,6 +3411,207 @@ describe('graph-tools', () => {
     });
   });
 
+  // ---- 9d. get-meeting-transcript-by-join-url utility tool ----
+  describe('get-meeting-transcript-by-join-url', () => {
+    const JOIN_URL =
+      'https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0?context=%7b%22Tid%22%3a%22t1%22%7d';
+    const MEETING_ID = 'MSo5NjdmNmU0Ni1kZDUx*0**19:meeting_abc@thread.v2';
+    const meetingPath = `/me/onlineMeetings/${encodeURIComponent(MEETING_ID)}`;
+    const meetingLookupPath = `/me/onlineMeetings?$filter=${encodeURIComponent(
+      `JoinWebUrl eq '${JOIN_URL}'`
+    )}`;
+
+    const jsonResponse = (body: unknown, meta?: Record<string, unknown>) => ({
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+      ...(meta ? { _meta: meta } : {}),
+    });
+
+    function transcriptClient(overrides: Record<string, unknown> = {}) {
+      const byPath: Record<string, unknown> = {
+        [meetingLookupPath]: jsonResponse(
+          {
+            value: [
+              {
+                id: MEETING_ID,
+                subject: 'KI-Agenten',
+                startDateTime: '2026-09-02T08:00:00Z',
+                endDateTime: '2026-09-02T10:00:00Z',
+                joinWebUrl: JOIN_URL,
+              },
+            ],
+          },
+          { http_status: 200 }
+        ),
+        [`${meetingPath}/transcripts`]: jsonResponse({
+          value: [
+            { id: 'older', createdDateTime: '2026-08-26T08:00:00Z' },
+            { id: 'newest', createdDateTime: '2026-09-02T08:05:00Z' },
+          ],
+        }),
+        [`${meetingPath}/transcripts/newest/content`]: jsonResponse({
+          message: 'OK!',
+          rawResponse: 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<v Julian>Hallo</v>',
+        }),
+        [`${meetingPath}/transcripts/older/content`]: jsonResponse({
+          message: 'OK!',
+          rawResponse: 'WEBVTT\n\nolder',
+        }),
+        ...overrides,
+      };
+      return {
+        graphRequest: vi.fn().mockImplementation(async (path: string) => {
+          const response = byPath[path];
+          if (!response) throw new Error(`unexpected path ${path}`);
+          return response;
+        }),
+      };
+    }
+
+    async function setup(graphClient: any) {
+      mockEndpoints.length = 0;
+      mockEndpointsJson = [];
+      const server = createMockServer();
+      const { registerGraphTools } = await loadModule();
+      registerGraphTools(server as any, graphClient as any);
+      const tool = server.tools.get('get-meeting-transcript-by-join-url');
+      expect(tool).toBeDefined();
+      return tool!;
+    }
+
+    it('resolves the meeting, picks the newest transcript and returns its WebVTT', async () => {
+      const graphClient = transcriptClient();
+      const tool = await setup(graphClient);
+
+      const result = await tool.handler({ joinWebUrl: JOIN_URL });
+      expect(result.isError).toBeFalsy();
+      const payload = JSON.parse(result.content[0].text);
+
+      expect(payload.meeting).toEqual({
+        id: MEETING_ID,
+        subject: 'KI-Agenten',
+        startDateTime: '2026-09-02T08:00:00Z',
+        endDateTime: '2026-09-02T10:00:00Z',
+      });
+      expect(payload.transcripts.map((t: any) => t.id)).toEqual(['newest', 'older']);
+      expect(payload.transcriptId).toBe('newest');
+      expect(payload.content).toContain('<v Julian>Hallo</v>');
+
+      // Exactly three Graph calls, the content one with a VTT Accept header, all JSON-pinned.
+      const calls = graphClient.graphRequest.mock.calls;
+      expect(calls.map((c: any[]) => c[0])).toEqual([
+        meetingLookupPath,
+        `${meetingPath}/transcripts`,
+        `${meetingPath}/transcripts/newest/content`,
+      ]);
+      expect(calls[2][1]).toMatchObject({ headers: { Accept: 'text/vtt' } });
+      for (const [, opts] of calls) {
+        expect(opts?.forceJsonOutput).toBe(true);
+      }
+      expect(result._meta).toMatchObject({ http_status: 200 });
+    });
+
+    it('fetches a specific transcript when transcriptId is given', async () => {
+      const graphClient = transcriptClient();
+      const tool = await setup(graphClient);
+
+      const result = await tool.handler({ joinWebUrl: JOIN_URL, transcriptId: 'older' });
+      const payload = JSON.parse(result.content[0].text);
+      expect(payload.transcriptId).toBe('older');
+      expect(payload.content).toBe('WEBVTT\n\nolder');
+    });
+
+    it('rejects a transcriptId that does not belong to the meeting', async () => {
+      const graphClient = transcriptClient();
+      const tool = await setup(graphClient);
+
+      const result = await tool.handler({ joinWebUrl: JOIN_URL, transcriptId: 'nope' });
+      expect(result.isError).toBe(true);
+      const payload = JSON.parse(result.content[0].text);
+      expect(payload.error).toContain('nope');
+      expect(payload.transcripts).toHaveLength(2);
+      expect(graphClient.graphRequest).toHaveBeenCalledTimes(2);
+    });
+
+    it('returns content null when the meeting has no transcript', async () => {
+      const graphClient = transcriptClient({
+        [`${meetingPath}/transcripts`]: jsonResponse({ value: [] }),
+      });
+      const tool = await setup(graphClient);
+
+      const result = await tool.handler({ joinWebUrl: JOIN_URL });
+      expect(result.isError).toBeFalsy();
+      const payload = JSON.parse(result.content[0].text);
+      expect(payload).toMatchObject({ transcripts: [], transcriptId: null, content: null });
+      expect(payload.message).toContain('no transcript');
+    });
+
+    it('fails clearly when no meeting matches the join link', async () => {
+      const graphClient = transcriptClient({
+        [meetingLookupPath]: jsonResponse({ value: [] }, { http_status: 200 }),
+      });
+      const tool = await setup(graphClient);
+
+      const result = await tool.handler({ joinWebUrl: JOIN_URL });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('No online meeting found');
+      expect(graphClient.graphRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('passes a Graph error from the meeting lookup through unchanged', async () => {
+      const graphError = {
+        content: [{ type: 'text', text: JSON.stringify({ error: '404 Not Found - 3004' }) }],
+        isError: true,
+        _meta: { http_status: 404 },
+      };
+      const graphClient = transcriptClient({ [meetingLookupPath]: graphError });
+      const tool = await setup(graphClient);
+
+      const result = await tool.handler({ joinWebUrl: JOIN_URL });
+      expect(result).toBe(graphError);
+    });
+
+    it('falls back to the plain transcript format when speaker attribution is forbidden', async () => {
+      const contentPath = `${meetingPath}/transcripts/newest/content`;
+      let attempts = 0;
+      const graphClient = transcriptClient();
+      const original = graphClient.graphRequest.getMockImplementation()!;
+      graphClient.graphRequest.mockImplementation(async (path: string, opts: any) => {
+        if (path === contentPath) {
+          attempts++;
+          if (opts?.headers?.Accept === 'text/vtt') {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({ error: '403 SpeakerAttributionNotAllowed' }),
+                },
+              ],
+              isError: true,
+            };
+          }
+          expect(opts?.headers?.Accept).toBe('application/vnd.microsoft.graph.transcript+text');
+          return jsonResponse({ message: 'OK!', rawResponse: 'plain transcript' });
+        }
+        return original(path, opts);
+      });
+      const tool = await setup(graphClient);
+
+      const result = await tool.handler({ joinWebUrl: JOIN_URL });
+      expect(result.isError).toBeFalsy();
+      expect(JSON.parse(result.content[0].text).content).toBe('plain transcript');
+      expect(attempts).toBe(2);
+    });
+
+    it('requires joinWebUrl', async () => {
+      const graphClient = transcriptClient();
+      const tool = await setup(graphClient);
+
+      const result = await tool.handler({ joinWebUrl: '   ' });
+      expect(result.isError).toBe(true);
+      expect(graphClient.graphRequest).not.toHaveBeenCalled();
+    });
+  });
+
   // ---- 9c. list-planner-tasks-with-plan-names utility tool ----
   describe('list-planner-tasks-with-plan-names', () => {
     const jsonResponse = (body: unknown, meta?: Record<string, unknown>) => ({

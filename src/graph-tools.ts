@@ -1870,6 +1870,211 @@ export const UTILITY_TOOLS: readonly UtilityTool[] = [
       }
     },
   },
+  {
+    name: 'get-meeting-transcript-by-join-url',
+    method: 'GET',
+    path: 'tool:get-meeting-transcript-by-join-url',
+    searchKeywords:
+      'meeting transcript join url joinWebUrl joinUrl teams besprechung transkript webvtt online meeting calendar event meeting chat',
+    description:
+      "Fetch the transcript of a Teams meeting in one call from its join link. Pass joinWebUrl: the joinUrl from a calendar event's onlineMeeting property (get-calendar-view) or onlineMeetingInfo.joinWebUrl of a meeting chat (list-chats). The server resolves the online meeting, lists its transcripts and returns the newest one as WebVTT with speaker tags, so no meeting or transcript id ever has to be copied by the caller. Use this instead of list-online-meetings + list-meeting-transcripts + get-meeting-transcript-content. Returns { meeting: { id, subject, startDateTime, endDateTime }, transcripts: [{ id, createdDateTime }], transcriptId, content }. content is null when the meeting has no transcript yet. Pass transcriptId (from transcripts) to fetch an older transcript of a recurring meeting.",
+    readOnlyHint: true,
+    openWorldHint: true,
+    buildSchema: (ctx) => {
+      const schema: Record<string, z.ZodTypeAny> = {
+        joinWebUrl: z
+          .string()
+          .min(1)
+          .describe(
+            'The Teams join link of the meeting (https://teams.microsoft.com/l/meetup-join/...). Copy it verbatim from the calendar event or the meeting chat.'
+          ),
+        transcriptId: z
+          .string()
+          .optional()
+          .describe(
+            'Optional transcript id from a previous result to fetch a specific transcript instead of the newest one.'
+          ),
+      };
+      if (ctx.multiAccount) {
+        schema['account'] = z
+          .string()
+          .optional()
+          .describe(
+            'Account to use when multiple Microsoft accounts are configured. Required when multiple accounts exist (see list-accounts).'
+          );
+      }
+      return schema;
+    },
+    execute: async (params, { graphClient, authManager }) => {
+      const joinWebUrl = typeof params.joinWebUrl === 'string' ? params.joinWebUrl.trim() : '';
+      const wantedTranscriptId = isNonEmptyString(params.transcriptId)
+        ? params.transcriptId
+        : undefined;
+      const accountParam = params.account as string | undefined;
+      try {
+        if (!joinWebUrl) {
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ error: 'joinWebUrl is required' }) }],
+            isError: true,
+          };
+        }
+        const accountModeError = await checkAccountParamInBearerMode(accountParam, authManager);
+        if (accountModeError) {
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ error: accountModeError }) }],
+            isError: true,
+          };
+        }
+        let accountAccessToken: string | undefined;
+        if (authManager && !authManager.isOAuthModeEnabled() && !getRequestTokens()) {
+          accountAccessToken = await authManager.getTokenForAccount(accountParam);
+        }
+        const requestOptions = { accessToken: accountAccessToken, forceJsonOutput: true };
+
+        // 1. Resolve the online meeting. Graph only allows this collection to be
+        //    queried by JoinWebUrl; a single quote inside the URL is escaped OData-style.
+        const filter = `JoinWebUrl eq '${joinWebUrl.replace(/'/g, "''")}'`;
+        const meetingResponse = await graphClient.graphRequest(
+          `/me/onlineMeetings?$filter=${encodeURIComponent(filter)}`,
+          requestOptions
+        );
+        if (meetingResponse?.isError) {
+          return meetingResponse;
+        }
+        const firstMeta = meetingResponse._meta;
+        const meetingPage = parseJsonText(meetingResponse?.content?.[0]?.text);
+        const meetings = isPlainObject(meetingPage) ? meetingPage.value : undefined;
+        const meeting =
+          Array.isArray(meetings) && isPlainObject(meetings[0]) ? meetings[0] : undefined;
+        if (!meeting || !isNonEmptyString(meeting.id)) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  error:
+                    'No online meeting found for this join link. Check that the link was copied verbatim and belongs to a meeting the signed-in user organized or attended.',
+                }),
+              },
+            ],
+            isError: true,
+            ...(firstMeta ? { _meta: firstMeta } : {}),
+          };
+        }
+        const meetingId = meeting.id;
+        const meetingPath = `/me/onlineMeetings/${encodeURIComponent(meetingId)}`;
+
+        // 2. List transcripts and pick the newest unless one was requested.
+        const listResponse = await graphClient.graphRequest(
+          `${meetingPath}/transcripts`,
+          requestOptions
+        );
+        if (listResponse?.isError) {
+          return listResponse;
+        }
+        const listPage = parseJsonText(listResponse?.content?.[0]?.text);
+        const rawTranscripts = isPlainObject(listPage) ? listPage.value : undefined;
+        const transcripts = (Array.isArray(rawTranscripts) ? rawTranscripts : [])
+          .filter((t): t is Record<string, unknown> => isPlainObject(t) && isNonEmptyString(t.id))
+          .map((t) => ({
+            id: t.id as string,
+            createdDateTime: typeof t.createdDateTime === 'string' ? t.createdDateTime : null,
+          }))
+          .sort((a, b) => (b.createdDateTime ?? '').localeCompare(a.createdDateTime ?? ''));
+
+        const meetingSummary = {
+          id: meetingId,
+          subject: typeof meeting.subject === 'string' ? meeting.subject : null,
+          startDateTime: typeof meeting.startDateTime === 'string' ? meeting.startDateTime : null,
+          endDateTime: typeof meeting.endDateTime === 'string' ? meeting.endDateTime : null,
+        };
+
+        let selected: (typeof transcripts)[number] | undefined = transcripts[0];
+        if (wantedTranscriptId) {
+          selected = transcripts.find((t) => t.id === wantedTranscriptId);
+          if (!selected) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    error: `Transcript ${wantedTranscriptId} does not belong to this meeting.`,
+                    meeting: meetingSummary,
+                    transcripts,
+                  }),
+                },
+              ],
+              isError: true,
+              ...(firstMeta ? { _meta: firstMeta } : {}),
+            };
+          }
+        }
+        if (!selected) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  meeting: meetingSummary,
+                  transcripts: [],
+                  transcriptId: null,
+                  content: null,
+                  message:
+                    'This meeting has no transcript. Transcription must have been switched on in Teams during the meeting.',
+                }),
+              },
+            ],
+            ...(firstMeta ? { _meta: firstMeta } : {}),
+          };
+        }
+
+        // 3. Fetch the WebVTT. If the tenant forbids speaker attribution, fall back to
+        //    the plain transcript format instead of failing.
+        const contentPath = `${meetingPath}/transcripts/${encodeURIComponent(selected.id)}/content`;
+        let contentResponse = await graphClient.graphRequest(contentPath, {
+          ...requestOptions,
+          headers: { Accept: 'text/vtt' },
+        });
+        if (
+          contentResponse?.isError &&
+          `${contentResponse?.content?.[0]?.text ?? ''}`.includes('SpeakerAttributionNotAllowed')
+        ) {
+          contentResponse = await graphClient.graphRequest(contentPath, {
+            ...requestOptions,
+            headers: { Accept: 'application/vnd.microsoft.graph.transcript+text' },
+          });
+        }
+        if (contentResponse?.isError) {
+          return contentResponse;
+        }
+        const contentBody = parseJsonText(contentResponse?.content?.[0]?.text);
+        const content =
+          isPlainObject(contentBody) && typeof contentBody.rawResponse === 'string'
+            ? contentBody.rawResponse
+            : typeof contentResponse?.content?.[0]?.text === 'string'
+              ? contentResponse.content[0].text
+              : null;
+
+        const result = {
+          meeting: meetingSummary,
+          transcripts,
+          transcriptId: selected.id,
+          content,
+        };
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+          ...(firstMeta ? { _meta: firstMeta } : {}),
+        };
+      } catch (error) {
+        const metadata = thrownErrorAuditFields(error);
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ error: (error as Error).message }) }],
+          isError: true,
+          ...(Object.keys(metadata).length > 0 ? { _meta: metadata } : {}),
+        };
+      }
+    },
+  },
 ];
 
 function registerUtilityToolWithMcp(
