@@ -104,6 +104,7 @@ const SCOPED_UTILITY_TOOLS: Record<string, string[]> = {
   'parse-teams-url': ['teams', 'teams-write', 'work'],
   'read-mail-text': ['mail', 'outlook', 'personal', 'work'],
   'list-planner-tasks-with-plan-names': ['tasks', 'work'],
+  'get-meeting-transcript-by-join-url': ['teams', 'teams-write', 'work'],
 };
 
 // Fail fast if a scoped utility references a preset that does not exist (e.g. a typo like
