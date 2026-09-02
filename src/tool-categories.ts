@@ -100,6 +100,7 @@ const SCOPED_UTILITY_TOOLS: Record<string, string[]> = {
   'get-download-url': ['files', 'onedrive', 'personal', 'work', 'search'],
   'get-upload-url': ['mail', 'calendar', 'outlook', 'personal', 'work'],
   'parse-teams-url': ['teams', 'teams-write', 'work'],
+  'list-planner-tasks-with-plan-names': ['tasks', 'work'],
 };
 
 // Fail fast if a scoped utility references a preset that does not exist (e.g. a typo like
