@@ -3634,7 +3634,6 @@ async function executeGraphTool(
           // response — otherwise fetchAllPages on a /delta endpoint silently drops
           // the resume token and forces callers to re-list from scratch.
           let deltaLink = combinedResponse['@odata.deltaLink'];
-          let unmergeablePage = false;
 
           while (nextLink && pageCount < maxPages && allItems.length < maxItems) {
             logger.info(`Fetching page ${pageCount + 1} from: ${nextLink}`);
@@ -3666,7 +3665,6 @@ async function executeGraphTool(
                 logger.warn(
                   `Pagination stopped at page ${pageCount + 1}: response was not a collection`
                 );
-                unmergeablePage = true;
                 break;
               }
               allItems = allItems.concat(nextJsonResponse.value);
@@ -3682,7 +3680,6 @@ async function executeGraphTool(
               }
               pageCount++;
             } else {
-              unmergeablePage = true;
               break;
             }
           }
@@ -3701,21 +3698,18 @@ async function executeGraphTool(
             // @odata.count is Graph's total for the filtered collection, so it is
             // left as page one reported it (it can exceed allItems.length when
             // maxPages/maxItems truncates the merge).
-            // A page that could not be merged is not a limit the caller chose, so
-            // the body keeps the link to it. Without it the short list reads as
-            // the whole collection.
-            if (unmergeablePage && nextLink) {
+            // HTK: the body keeps the continuation link whenever the loop stopped
+            // early (maxPages, maxItems, or a page it could not merge). Consumers
+            // (briefing) must not mistake a prefix for all rows; they resume via
+            // skiptoken.
+            if (nextLink) {
               combinedResponse['@odata.nextLink'] = nextLink;
             } else {
               delete combinedResponse['@odata.nextLink'];
             }
             // The client's metadata described page one. Now that pages are
-            // merged, restate all three for the whole read.
-            //
-            // nextLink still being set means the loop stopped early: on maxPages,
-            // on maxItems, or on a page it could not merge. Graph has more. For
-            // the two limits the merged body drops @odata.nextLink, so the audit
-            // event is the only place that truncation is visible.
+            // merged, restate all three for the whole read. result_has_more
+            // mirrors the preserved @odata.nextLink.
             response._meta = {
               ...response._meta,
               result_count: allItems.length,
@@ -3733,6 +3727,7 @@ async function executeGraphTool(
         }
       } catch (e) {
         logger.error(`Error during pagination: ${e}`);
+        throw new Error('Pagination interrupted before collection was complete');
       }
 
       // Re-encode once in the configured format. Runs whenever page one parsed
