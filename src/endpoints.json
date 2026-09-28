@@ -1,5 +1,13 @@
 [
   {
+    "pathPattern": "/me/mailFolders/{mailFolder-id}",
+    "method": "get",
+    "toolName": "get-mail-folder",
+    "presets": ["mail", "outlook", "personal"],
+    "scopes": ["Mail.Read"],
+    "llmTip": "Resolve a mail folder ID, including well-known names drafts, sentitems, deleteditems and junkemail. Use the returned immutable folder id to exclude these folders and their descendants regardless of display language."
+  },
+  {
     "pathPattern": "/$batch",
     "method": "post",
     "toolName": "graph-batch",

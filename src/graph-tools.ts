@@ -2776,17 +2776,14 @@ async function executeGraphTool(
             }
 
             combinedResponse.value = allItems;
-            if (combinedResponse['@odata.count']) {
-              combinedResponse['@odata.count'] = allItems.length;
-            }
-            delete combinedResponse['@odata.nextLink'];
+            // HTK: keep the server's @odata.count and, if maxPages/maxItems stopped
+            // the loop, the continuation link. Consumers (briefing) must not mistake
+            // a prefix for all rows; they resume via skiptoken.
+            if (nextLink) combinedResponse['@odata.nextLink'] = nextLink;
+            else delete combinedResponse['@odata.nextLink'];
             // The client's metadata described page one. Now that pages are
-            // merged, restate all three for the whole read.
-            //
-            // nextLink still being set means the loop stopped on maxPages or
-            // maxItems, not on running out: Graph has more. The merged body
-            // drops @odata.nextLink either way, so the audit event is the only
-            // place that truncation is visible.
+            // merged, restate all three for the whole read. result_has_more
+            // mirrors the preserved @odata.nextLink.
             response._meta = {
               ...response._meta,
               result_count: allItems.length,
@@ -2804,6 +2801,7 @@ async function executeGraphTool(
         }
       } catch (e) {
         logger.error(`Error during pagination: ${e}`);
+        throw new Error('Pagination interrupted before collection was complete');
       }
 
       // Re-encode once in the configured format. Runs whenever page one parsed
