@@ -3368,7 +3368,7 @@ describe('graph-tools', () => {
       expect(result.isError).toBe(true);
       expect(graphClient.graphRequest).not.toHaveBeenCalled();
       const payload = JSON.parse(result.content[0].text);
-      expect(payload.error).toMatch(/Meeting recordings do not expose/);
+      expect(payload.error).toMatch(/Meeting recordings and transcripts do not expose/);
     });
 
     it('refuses mismatched account param in bearer mode before resolving download URL', async () => {

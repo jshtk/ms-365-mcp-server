@@ -693,7 +693,7 @@
     "method": "post",
     "toolName": "share-drive-item",
     "presets": ["files", "onedrive", "personal"],
-    "scopes": ["Files.ReadWrite"],
+    "scopes": [["Files.ReadWrite"], ["Sites.Selected"]],
     "llmTip": "Shares a file or folder with specific users. Body: { recipients: [{ email: 'user@example.com' }], roles: ['read'], sendInvitation: true, message: 'Please review this file.' }. Roles: 'read', 'write', 'owner'. Set requireSignIn to true to require authentication."
   },
   {

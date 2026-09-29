@@ -1021,6 +1021,22 @@ async function checkAccountParamInBearerMode(
   );
 }
 
+const MEETING_BYTE_PATHS = [
+  /^(\/me|\/users\/[^/]+)\/onlineMeetings\/[^/]+\/recordings\/[^/]+(?:\/content)?$/,
+  /^\/communications\/calls\/[^/]+\/recordings\/[^/]+(?:\/content)?$/,
+  // HTK: transcript bytes, so a sidecar can fetch them without routing text through the model
+  /^(\/me|\/users\/[^/]+)\/onlineMeetings\/[^/]+\/transcripts\/[^/]+\/content$/,
+];
+
+/**
+ * True for meeting recording and transcript byte endpoints: Graph serves their
+ * bytes only with an Authorization header, so get-download-url can hand them out
+ * solely as a server-minted single-use URL (--enable-attachment-urls).
+ */
+export function isMintableMeetingBytePath(pathPart: string): boolean {
+  return MEETING_BYTE_PATHS.some((re) => re.test(pathPart));
+}
+
 /**
  * Mint a server-served download URL for a Graph byte resource Graph itself
  * exposes no pre-authenticated URL for, or return null if minting is off.
@@ -1466,7 +1482,7 @@ export const UTILITY_TOOLS: readonly UtilityTool[] = [
     searchKeywords:
       'download file download drive file download onedrive file sharepoint file download large drive file large sharepoint file large file out-of-band download pre-authenticated url',
     description:
-      'Resolve a short-lived, pre-authenticated download URL for Microsoft Graph binary content that exposes one (drive/SharePoint file content). The returned URL streams the bytes with NO Authorization header, so the client can fetch it straight to disk (e.g. curl) without round-tripping base64 through the agent context. Prefer this over download-bytes for any file above a few KB or any bulk download. Returns { downloadUrl, name?, size?, contentType? }. Mail file attachments (/messages/{id}/attachments/{id}/$value), meeting recordings and other $value byte endpoints have no pre-authenticated URL from Graph itself, but call this tool for them anyway: a server running with --enable-attachment-urls mints its own single-use URL for them, and one without it answers with the reason and points at download-bytes.',
+      'Resolve a short-lived, pre-authenticated download URL for Microsoft Graph binary content that exposes one (drive/SharePoint file content). The returned URL streams the bytes with NO Authorization header, so the client can fetch it straight to disk (e.g. curl) without round-tripping base64 through the agent context. Prefer this over download-bytes for any file above a few KB or any bulk download. Returns { downloadUrl, name?, size?, contentType? }. Mail file attachments (/messages/{id}/attachments/{id}/$value), meeting recordings, meeting transcript content (/onlineMeetings/{id}/transcripts/{id}/content) and other $value byte endpoints have no pre-authenticated URL from Graph itself, but call this tool for them anyway: a server running with --enable-attachment-urls mints its own single-use URL for them, and one without it answers with the reason and points at download-bytes.',
     readOnlyHint: true,
     openWorldHint: true,
     buildSchema: (ctx) => {
@@ -1561,13 +1577,9 @@ export const UTILITY_TOOLS: readonly UtilityTool[] = [
           isError: true,
         };
       }
-      // Recording content endpoints return authenticated bytes, not a pre-authenticated URL.
-      if (
-        /^(\/me|\/users\/[^/]+)\/onlineMeetings\/[^/]+\/recordings\/[^/]+(?:\/content)?$/.test(
-          pathPart
-        ) ||
-        /^\/communications\/calls\/[^/]+\/recordings\/[^/]+(?:\/content)?$/.test(pathPart)
-      ) {
+      // Recording and transcript content endpoints return authenticated bytes, not a
+      // pre-authenticated URL.
+      if (isMintableMeetingBytePath(pathPart)) {
         const minted = await mintDownloadUrl(pathPart, accountParam, authManager);
         if (minted) return minted;
         return {
@@ -1576,7 +1588,7 @@ export const UTILITY_TOOLS: readonly UtilityTool[] = [
               type: 'text',
               text: JSON.stringify({
                 error:
-                  'Meeting recordings do not expose a pre-authenticated download URL. Use download-bytes for small recordings or get-meeting-recording-content where available.',
+                  'Meeting recordings and transcripts do not expose a pre-authenticated download URL. Use download-bytes for small recordings and transcripts, or get-meeting-recording-content where available.',
               }),
             },
           ],
