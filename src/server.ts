@@ -37,6 +37,11 @@ import logger, { enableConsoleLogging } from './logger.js';
 import { buildMcpServerInstructions } from './mcp-instructions.js';
 import { installToolSchemaRefNormalization } from './normalize-tool-schema.js';
 import { MicrosoftOAuthProvider } from './oauth-provider.js';
+import {
+  UploadSessionHandleStore,
+  UPLOAD_SESSION_ROUTE,
+  createUploadSessionHandler,
+} from './lib/upload-session-handles.js';
 import OboClient from './obo-client.js';
 import { requestContext } from './request-context.js';
 import { getSecrets, type AppSecrets } from './secrets.js';
@@ -494,6 +499,22 @@ class MicrosoftGraphServer {
       throw new Error(
         '--attachment-port requires --enable-attachment-urls: on its own there is no ' +
           'attachment route to put on the second listener. Pass both, or neither.'
+      );
+    }
+
+    // HTK --upload-session-handles: the handle is redeemed on the attachment listener, and
+    // only there -- the redemption hands out a live upload credential, so it must never be
+    // reachable on the MCP port. Without a dedicated listener there is nowhere to put it.
+    if (this.options.uploadSessionHandles && !this.options.enableAttachmentUrls) {
+      throw new Error(
+        '--upload-session-handles requires --enable-attachment-urls: the handle points at the ' +
+          'attachment listener. Pass both, or neither (MS365_MCP_UPLOAD_SESSION_HANDLES).'
+      );
+    }
+    if (this.options.uploadSessionHandles && attachmentPort === null) {
+      throw new Error(
+        '--upload-session-handles requires --attachment-port: /upload-session is served only ' +
+          'on the dedicated attachment listener, never on the MCP port.'
       );
     }
 
@@ -1115,7 +1136,14 @@ class MicrosoftGraphServer {
       let attachmentApp: express.Express | null = null;
       if (attachmentConfig) {
         const ticketStore = new AttachmentTicketStore(attachmentConfig.ttlSeconds);
-        configureAttachmentMinting({ store: ticketStore, config: attachmentConfig });
+        const uploadSessions = this.options.uploadSessionHandles
+          ? new UploadSessionHandleStore()
+          : null;
+        configureAttachmentMinting({
+          store: ticketStore,
+          config: attachmentConfig,
+          uploadSessions,
+        });
 
         // Where the route goes.
         //
@@ -1170,15 +1198,15 @@ class MicrosoftGraphServer {
         // route landed on: moving the route to its own listener must not be a
         // way to shed the protection that came with it.
         if (!rateLimitDisabled) {
-          attachmentApp.use(
-            ATTACHMENT_ROUTE,
-            rateLimit({
-              windowMs: 60_000,
-              max: 60,
-              standardHeaders: 'draft-7',
-              legacyHeaders: false,
-            })
-          );
+          const attachmentLimiter = rateLimit({
+            windowMs: 60_000,
+            max: 60,
+            standardHeaders: 'draft-7',
+            legacyHeaders: false,
+          });
+          attachmentApp.use(ATTACHMENT_ROUTE, attachmentLimiter);
+          // HTK: the same limiter (and budget) guards upload-session redemption.
+          if (uploadSessions) attachmentApp.use(UPLOAD_SESSION_ROUTE, attachmentLimiter);
         }
         const attachmentDeps = {
           store: ticketStore,
@@ -1189,6 +1217,18 @@ class MicrosoftGraphServer {
         // Same route, same ticket store: a PUT redeems an upload ticket minted by
         // get-upload-url and attaches the body to the ticket's message or event.
         attachmentApp.put(ATTACHMENT_ROUTE, createAttachmentUploadHandler(attachmentDeps));
+        if (uploadSessions) {
+          // Startup validation guarantees attachmentApp is the dedicated listener here.
+          attachmentApp.get(
+            `${UPLOAD_SESSION_ROUTE}/:id`,
+            createUploadSessionHandler({ store: uploadSessions })
+          );
+          logger.info(
+            `  - Upload-session handles: ${attachmentConfig.base}${UPLOAD_SESSION_ROUTE}/<id> ` +
+              '(single-use, ttl min(15 min, Graph expiry); create-upload-session never returns ' +
+              'the real uploadUrl)'
+          );
+        }
         logger.info(
           `  - Attachment URLs: ${attachmentConfig.base}${ATTACHMENT_ROUTE} ` +
             `(ttl ${attachmentConfig.ttlSeconds}s, ` +
@@ -1253,7 +1293,11 @@ class MicrosoftGraphServer {
           throw error;
         }
         const attachment = describeBoundAddress(attachmentBound);
-        logger.info(`Attachment listener on ${attachment.label} — serves ${ATTACHMENT_ROUTE} only`);
+        logger.info(
+          `Attachment listener on ${attachment.label} — serves ${ATTACHMENT_ROUTE}` +
+            (this.options.uploadSessionHandles ? ` and ${UPLOAD_SESSION_ROUTE}/<id>` : '') +
+            ' only'
+        );
 
         // The split is only an isolation boundary if the two listeners are
         // reachable from different places. Sharing an address -- or either one
