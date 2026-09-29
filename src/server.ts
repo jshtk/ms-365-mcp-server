@@ -1116,7 +1116,8 @@ class MicrosoftGraphServer {
         logger.info(
           '--mint-with-request-identity is on: when Graph identity comes from the request, ' +
             'get-download-url mints single-use URLs for meeting recordings, transcript content ' +
-            "and $value byte endpoints, each bound to the caller's own access token (memory only, " +
+            'and non-attachment $value byte endpoints (never mail or event attachments), ' +
+            "each bound to the caller's own access token (memory only, " +
             'wiped on redemption or expiry). Redemption fetches with exactly that token.'
         );
       } else if (attachmentConfig && mintingAlwaysRefused) {

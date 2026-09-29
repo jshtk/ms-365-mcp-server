@@ -217,6 +217,17 @@ describe('request-identity-bound minting', () => {
       expect(authHeaders).toEqual([`Bearer ${TOKEN_BOB}`, `Bearer ${TOKEN_ALICE}`]);
     });
 
+    it.each([
+      '/me/messages/x/attachments/y/$value',
+      '/users/u1/events/e1/attachments/a1/$value',
+      '/groups/g1/messages/m1/attachments/a1/$value',
+    ])('does not extend to mail/event attachments: %s keeps the upstream refusal', async (t) => {
+      const result = await mintAs(TOKEN_ALICE, t);
+      expect((result as { isError?: boolean }).isError).toBe(true);
+      expect(parse(result).error).toMatch(/Graph identity comes from the request/);
+      expect(store.size()).toBe(0);
+    });
+
     it('does not extend to the drive-item fallback (only byte endpoints)', async () => {
       const driveClient = {
         graphRequest: async () => ({ content: [{ type: 'text', text: '{"id":"x"}' }] }),

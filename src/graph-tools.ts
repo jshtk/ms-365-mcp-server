@@ -1078,7 +1078,8 @@ async function mintDownloadUrl(
   // HTK `--mint-with-request-identity`: instead of refusing, bind the caller's own
   // access token to the ticket, so redemption fetches as exactly the identity that
   // asked -- the same guarantee, kept by carrying the identity rather than by refusing.
-  // Only for the driveItem-less byte endpoints (call sites pass allowRequestIdentity),
+  // Only for meeting recordings/transcripts and non-attachment $value endpoints (call sites
+  // pass allowRequestIdentity; mail/event attachments and the drive-item fallback do not),
   // and the token lives only in the ticket store's memory until redemption or expiry.
   let boundAccessToken: string | undefined;
   if (authManager?.isOAuthModeEnabled() || getRequestTokens()) {
@@ -1579,9 +1580,10 @@ export const UTILITY_TOOLS: readonly UtilityTool[] = [
         /^\/groups\/[^/]+\/messages\/[^/]+\/attachments\//.test(pathPart) ||
         /^\/groups\/[^/]+\/events\/[^/]+\/attachments\//.test(pathPart)
       ) {
-        const minted = await mintDownloadUrl(pathPart, accountParam, authManager, {
-          allowRequestIdentity: true,
-        });
+        // HTK: deliberately no allowRequestIdentity here -- request-identity minting is
+        // approved for meeting recordings/transcripts and other $value endpoints only, so
+        // attachments keep the upstream refusal when identity comes from the request.
+        const minted = await mintDownloadUrl(pathPart, accountParam, authManager);
         if (minted) return minted;
         return {
           content: [

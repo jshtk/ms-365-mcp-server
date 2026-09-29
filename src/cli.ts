@@ -55,7 +55,7 @@ program
   )
   .option(
     '--mint-with-request-identity',
-    'HTK. With --enable-attachment-urls in plain --http/OAuth mode: mint single-use URLs for meeting recordings, meeting transcript content and other $value byte endpoints even though Graph identity comes from the request, by binding the own access token of the caller to the ticket (memory only, wiped on redemption or expiry). Redemption fetches with exactly that token, never the server token cache. Off by default. Equivalent env var: MS365_MCP_MINT_WITH_REQUEST_IDENTITY=true.'
+    'HTK. With --enable-attachment-urls in plain --http/OAuth mode: mint single-use URLs for meeting recordings, meeting transcript content and other non-attachment $value byte endpoints (never mail or event attachments) even though Graph identity comes from the request, by binding the own access token of the caller to the ticket (memory only, wiped on redemption or expiry). Redemption fetches with exactly that token, never the server token cache. Off by default. Equivalent env var: MS365_MCP_MINT_WITH_REQUEST_IDENTITY=true.'
   )
   .option(
     '--attachment-port <port>',
