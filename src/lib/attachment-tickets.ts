@@ -108,11 +108,19 @@ export interface AttachmentTicket {
    * a separate map that is cleared together with the ticket (redeem or expiry).
    */
   readonly boundAccessToken?: string;
+  /**
+   * HTK: explicit Accept header for the redemption fetch. Graph refuses transcript
+   * `/content` with fetch's default wildcard Accept ("Invalid format ... specified."),
+   * so transcript tickets carry `text/vtt`. Unset for everything else (unchanged).
+   */
+  readonly accept?: string;
 }
 
 export interface MintOptions {
   /** Bind the caller's access token to this ticket (request-identity minting). */
   boundAccessToken?: string;
+  /** Accept header to send when the ticket is redeemed. */
+  accept?: string;
 }
 
 /**
@@ -167,7 +175,12 @@ export class AttachmentTicketStore {
     }
     const id = randomBytes(TICKET_BYTES).toString('base64url');
     const expiresAtMs = nowMs + this.ttlSeconds * 1000;
-    this.tickets.set(id, { target, accountName, expiresAtMs });
+    this.tickets.set(id, {
+      target,
+      accountName,
+      expiresAtMs,
+      ...(options.accept ? { accept: options.accept } : {}),
+    });
     if (options.boundAccessToken) this.boundTokens.set(id, options.boundAccessToken);
     return { id, expiresAtMs };
   }

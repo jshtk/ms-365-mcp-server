@@ -169,7 +169,11 @@ export function createAttachmentHandler(deps: AttachmentRouteDeps): Handler {
       } else if (!deps.authManager.isOAuthModeEnabled()) {
         accessToken = await deps.authManager.getTokenForAccount(ticket.accountName);
       }
-      stream = await graphClient.downloadStream(ticket.target, { accessToken });
+      stream = await graphClient.downloadStream(ticket.target, {
+        accessToken,
+        // HTK: transcript tickets carry text/vtt; Graph rejects fetch's default wildcard Accept.
+        ...(ticket.accept ? { headers: { Accept: ticket.accept } } : {}),
+      });
     } catch (error) {
       // The target path is logged; the ticket id never is. The path is what an
       // operator needs to diagnose a failure and is not itself a capability --

@@ -361,7 +361,7 @@ class GraphClient {
    */
   async downloadStream(
     endpoint: string,
-    options: Pick<GraphRequestOptions, 'accessToken' | 'apiVersion'> = {}
+    options: Pick<GraphRequestOptions, 'accessToken' | 'apiVersion' | 'headers'> = {}
   ): Promise<{
     body: NonNullable<Response['body']>;
     contentType: string;

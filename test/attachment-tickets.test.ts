@@ -33,6 +33,14 @@ describe('AttachmentTicketStore', () => {
     expect(store.redeem(id, NOW)).toBeUndefined();
   });
 
+  it('carries an Accept override through to redemption (HTK, transcripts)', () => {
+    const store = new AttachmentTicketStore(120);
+    const { id } = store.mint('/target', undefined, NOW, { accept: 'text/vtt' });
+    expect(store.redeem(id, NOW)?.accept).toBe('text/vtt');
+    const { id: plain } = store.mint('/target', undefined, NOW);
+    expect(store.redeem(plain, NOW)?.accept).toBeUndefined();
+  });
+
   it('carries the account through to redemption', () => {
     const store = new AttachmentTicketStore(120);
     const { id } = store.mint('/target', 'olga@example.com', NOW);

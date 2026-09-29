@@ -96,6 +96,7 @@ function mockRes(sent: { status?: number; body?: unknown }) {
 describe('request-identity-bound minting', () => {
   let store: AttachmentTicketStore;
   let authHeaders: string[];
+  let acceptHeaders: Array<string | undefined>;
   const originalFetch = global.fetch;
 
   const graphClient = new GraphClient(
@@ -131,8 +132,10 @@ describe('request-identity-bound minting', () => {
     vi.clearAllMocks();
     store = new AttachmentTicketStore(120);
     authHeaders = [];
+    acceptHeaders = [];
     global.fetch = (async (_url: string, init: RequestInit) => {
       authHeaders.push((init.headers as Record<string, string>).Authorization);
+      acceptHeaders.push((init.headers as Record<string, string>).Accept);
       return new Response('WEBVTT\n\n00:00.000 --> 00:01.000\n<v A>hi</v>\n', {
         status: 200,
         headers: { 'content-type': 'text/vtt' },
@@ -159,6 +162,33 @@ describe('request-identity-bound minting', () => {
       const sent = await redeem(ticketOf(downloadUrl));
       expect(sent.status).toBe(200);
       expect(authHeaders).toEqual([`Bearer ${TOKEN_ALICE}`]);
+    });
+
+    // Pilot 29.09.2026: Graph answers transcript /content without an explicit Accept with
+    // 400 "Invalid format '*/*' specified." (fetch's default). The ticket must carry text/vtt.
+    it('redeems transcript content with Accept: text/vtt', async () => {
+      const ticket = ticketOf(parse(await mintAs(TOKEN_ALICE)).downloadUrl);
+      expect((await redeem(ticket)).status).toBe(200);
+      expect(acceptHeaders).toEqual(['text/vtt']);
+    });
+
+    it.each(['/users/u1/onlineMeetings/m1/transcripts/t1/content'])(
+      'also sets text/vtt for %s',
+      async (target) => {
+        const ticket = ticketOf(parse(await mintAs(TOKEN_ALICE, target)).downloadUrl);
+        await redeem(ticket);
+        expect(acceptHeaders).toEqual(['text/vtt']);
+      }
+    );
+
+    it.each([
+      '/me/onlineMeetings/m1/recordings/r1/content',
+      '/communications/calls/c1/recordings/r1',
+      '/me/photo/$value',
+    ])('leaves Accept unset for %s (unchanged behaviour)', async (target) => {
+      const ticket = ticketOf(parse(await mintAs(TOKEN_ALICE, target)).downloadUrl);
+      await redeem(ticket);
+      expect(acceptHeaders).toEqual([undefined]);
     });
 
     it('is single-use', async () => {

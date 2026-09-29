@@ -1037,6 +1037,19 @@ export function isMintableMeetingBytePath(pathPart: string): boolean {
   return MEETING_BYTE_PATHS.some((re) => re.test(pathPart));
 }
 
+const TRANSCRIPT_CONTENT_PATH =
+  /^(\/me|\/users\/[^/]+)\/onlineMeetings\/[^/]+\/transcripts\/[^/]+\/content$/;
+
+/**
+ * HTK: Accept header a minted ticket must redeem with. Graph answers transcript
+ * `/content` requested with fetch's default wildcard Accept with 400 "Invalid format
+ * <wildcard> specified." (pilot 29.09.2026), so transcripts get `text/vtt` -- the same
+ * default get-meeting-transcript-content uses. Everything else keeps no override.
+ */
+export function mintAcceptFor(target: string): string | undefined {
+  return TRANSCRIPT_CONTENT_PATH.test(target) ? 'text/vtt' : undefined;
+}
+
 /**
  * Mint a server-served download URL for a Graph byte resource Graph itself
  * exposes no pre-authenticated URL for, or return null if minting is off.
@@ -1139,7 +1152,10 @@ async function mintDownloadUrl(
 
   let ticket: { id: string; expiresAtMs: number };
   try {
-    ticket = minting.store.mint(target, accountParam, undefined, { boundAccessToken });
+    ticket = minting.store.mint(target, accountParam, undefined, {
+      boundAccessToken,
+      accept: mintAcceptFor(target),
+    });
   } catch (error) {
     if (error instanceof TicketStoreFullError) {
       return {
