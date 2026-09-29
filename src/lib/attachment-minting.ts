@@ -15,6 +15,7 @@
 
 import type { AttachmentTicketStore } from './attachment-tickets.js';
 import type { AttachmentUrlConfig } from './attachment-url-config.js';
+import type { UploadSessionHandleStore } from './upload-session-handles.js';
 
 export interface AttachmentMinting {
   store: AttachmentTicketStore;
@@ -25,6 +26,12 @@ export interface AttachmentMinting {
    * Off unless explicitly enabled.
    */
   mintWithRequestIdentity?: boolean;
+  /**
+   * HTK `--upload-session-handles`: when set, a successful create-upload-session result
+   * carries a short single-use handle on the attachment listener instead of the real
+   * uploadUrl. Absent unless explicitly enabled.
+   */
+  uploadSessions?: UploadSessionHandleStore | null;
 }
 
 let current: AttachmentMinting | null = null;

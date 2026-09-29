@@ -58,6 +58,10 @@ program
     'HTK. With --enable-attachment-urls in plain --http/OAuth mode: mint single-use URLs for meeting recordings, meeting transcript content and other non-attachment $value byte endpoints (never mail or event attachments) even though Graph identity comes from the request, by binding the own access token of the caller to the ticket (memory only, wiped on redemption or expiry). Redemption fetches with exactly that token, never the server token cache. Off by default. Equivalent env var: MS365_MCP_MINT_WITH_REQUEST_IDENTITY=true.'
   )
   .option(
+    '--upload-session-handles',
+    'HTK. Requires --enable-attachment-urls and --attachment-port. A successful create-upload-session result carries a short single-use handle (<MS365_MCP_ATTACHMENT_URL_BASE>/upload-session/<id>, plus uploadUrlIsHandle: true) instead of the real uploadUrl, so an agent never has to copy the long tempauth URL. The real URL stays in memory only (TTL min(15 min, Graph expirationDateTime)) and is returned once by GET /upload-session/<id> on the attachment listener. Off by default. Equivalent env var: MS365_MCP_UPLOAD_SESSION_HANDLES=true.'
+  )
+  .option(
     '--attachment-port <port>',
     'HTTP mode only. Serve the attachment download route on its own listener on this port instead of on the MCP app, so a caller that can fetch attachments cannot also reach /mcp. Requires --enable-attachment-urls, and MS365_MCP_ATTACHMENT_URL_BASE must name this port. A separate port only isolates the two surfaces if they also bind separate interfaces — see --attachment-host. Equivalent env var: MS365_MCP_ATTACHMENT_PORT.'
   )
@@ -150,6 +154,8 @@ export interface CommandOptions {
   enableAttachmentUrls?: boolean;
   /** HTK: bind the caller's token to minted tickets under request identity (opt-in). */
   mintWithRequestIdentity?: boolean;
+  /** HTK: replace create-upload-session's uploadUrl with a single-use handle (opt-in). */
+  uploadSessionHandles?: boolean;
   /**
    * Raw, unvalidated port for the split attachment listener. A string when it
    * came from the command line or the environment; `server.ts` is what turns it
@@ -274,6 +280,14 @@ export function parseArgs(): CommandOptions {
     ['true', '1'].includes((process.env.MS365_MCP_MINT_WITH_REQUEST_IDENTITY ?? '').toLowerCase())
   ) {
     options.mintWithRequestIdentity = true;
+  }
+
+  // HTK: opt-in only. Checked against --enable-attachment-urls / --attachment-port in server.ts.
+  if (
+    !options.uploadSessionHandles &&
+    ['true', '1'].includes((process.env.MS365_MCP_UPLOAD_SESSION_HANDLES ?? '').toLowerCase())
+  ) {
+    options.uploadSessionHandles = true;
   }
 
   if (options.attachmentPort === undefined && process.env.MS365_MCP_ATTACHMENT_PORT !== undefined) {

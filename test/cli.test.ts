@@ -280,6 +280,40 @@ describe('CLI Module', () => {
     });
   });
 
+  // HTK: upload-session handles are opt-in only.
+  describe('--upload-session-handles / MS365_MCP_UPLOAD_SESSION_HANDLES', () => {
+    const prev = process.env.MS365_MCP_UPLOAD_SESSION_HANDLES;
+
+    afterEach(() => {
+      if (prev === undefined) delete process.env.MS365_MCP_UPLOAD_SESSION_HANDLES;
+      else process.env.MS365_MCP_UPLOAD_SESSION_HANDLES = prev;
+    });
+
+    it('is off by default', () => {
+      delete process.env.MS365_MCP_UPLOAD_SESSION_HANDLES;
+      commanderMocks.mockCommand.opts.mockReturnValue({ http: '3000' });
+      expect(parseArgs().uploadSessionHandles).toBeFalsy();
+    });
+
+    it('is enabled by the CLI flag', () => {
+      delete process.env.MS365_MCP_UPLOAD_SESSION_HANDLES;
+      commanderMocks.mockCommand.opts.mockReturnValue({ http: '3000', uploadSessionHandles: true });
+      expect(parseArgs().uploadSessionHandles).toBe(true);
+    });
+
+    it.each(['true', '1', 'TRUE'])('is enabled by the env var set to %s', (value) => {
+      process.env.MS365_MCP_UPLOAD_SESSION_HANDLES = value;
+      commanderMocks.mockCommand.opts.mockReturnValue({ http: '3000' });
+      expect(parseArgs().uploadSessionHandles).toBe(true);
+    });
+
+    it.each(['false', '0', ''])('stays off for env value %j', (value) => {
+      process.env.MS365_MCP_UPLOAD_SESSION_HANDLES = value;
+      commanderMocks.mockCommand.opts.mockReturnValue({ http: '3000' });
+      expect(parseArgs().uploadSessionHandles).toBeFalsy();
+    });
+  });
+
   describe('--attachment-port / MS365_MCP_ATTACHMENT_PORT', () => {
     const prev = process.env.MS365_MCP_ATTACHMENT_PORT;
 

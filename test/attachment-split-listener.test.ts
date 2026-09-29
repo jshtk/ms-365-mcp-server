@@ -595,6 +595,97 @@ describe('--attachment-port (split attachment listener)', () => {
     });
   });
 
+  // HTK --upload-session-handles
+  describe('--upload-session-handles', () => {
+    const REAL = 'https://tenant.sharepoint.com/x/uploadSession?guid=g&tempauth=v1.SECRET.SIG';
+
+    it('serves /upload-session/:id on the attachment port only, never on the MCP port', async () => {
+      const [mcpPort, attachmentPort] = await reserveFreePorts(2);
+      process.env.MS365_MCP_ATTACHMENT_URL_BASE = `http://127.0.0.1:${attachmentPort}`;
+      await start({
+        http: `127.0.0.1:${mcpPort}`,
+        enableAttachmentUrls: true,
+        attachmentPort: String(attachmentPort),
+        uploadSessionHandles: true,
+      });
+      const store = getAttachmentMinting()?.uploadSessions;
+      expect(store).toBeTruthy();
+      const { id } = store!.mint(REAL, undefined);
+
+      // MCP port: Express's own 404, and the ticket is untouched.
+      const onMcp = await fetch(`http://127.0.0.1:${mcpPort}/upload-session/${id}`);
+      expect(onMcp.status).toBe(404);
+      expect(await onMcp.text()).not.toBe('Not found');
+      expect(store!.size()).toBe(1);
+
+      const onAttachment = await fetch(`http://127.0.0.1:${attachmentPort}/upload-session/${id}`);
+      expect(onAttachment.status).toBe(200);
+      expect(onAttachment.headers.get('cache-control')).toBe('no-store');
+      expect(await onAttachment.json()).toEqual({
+        uploadUrl: REAL,
+        expirationDateTime: expect.any(String),
+      });
+
+      const again = await fetch(`http://127.0.0.1:${attachmentPort}/upload-session/${id}`);
+      expect(again.status).toBe(404);
+      expect(await again.text()).toBe('Not found');
+
+      const unknown = await fetch(`http://127.0.0.1:${attachmentPort}/upload-session/doesnotexist`);
+      expect(unknown.status).toBe(404);
+      expect(await unknown.text()).toBe('Not found');
+    });
+
+    it('carries the same rate limit as /attachment', async () => {
+      const [mcpPort, attachmentPort] = await reserveFreePorts(2);
+      process.env.MS365_MCP_ATTACHMENT_URL_BASE = `http://127.0.0.1:${attachmentPort}`;
+      await start({
+        http: `127.0.0.1:${mcpPort}`,
+        enableAttachmentUrls: true,
+        attachmentPort: String(attachmentPort),
+        uploadSessionHandles: true,
+      });
+      const url = `http://127.0.0.1:${attachmentPort}/upload-session/nope`;
+      for (let i = 0; i < 60; i++) {
+        const response = await fetch(url);
+        expect(`request ${i} -> ${response.status}`).toBe(`request ${i} -> 404`);
+      }
+      const limited = await fetch(url);
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get('ratelimit-policy')).toMatch(/60;w=60/);
+    });
+
+    it('is off by default: no store, no route', async () => {
+      const [mcpPort, attachmentPort] = await reserveFreePorts(2);
+      process.env.MS365_MCP_ATTACHMENT_URL_BASE = `http://127.0.0.1:${attachmentPort}`;
+      await start({
+        http: `127.0.0.1:${mcpPort}`,
+        enableAttachmentUrls: true,
+        attachmentPort: String(attachmentPort),
+      });
+      expect(getAttachmentMinting()?.uploadSessions).toBeFalsy();
+      const response = await fetch(`http://127.0.0.1:${attachmentPort}/upload-session/x`);
+      expect(response.status).toBe(404);
+      expect(await response.text()).not.toBe('Not found');
+    });
+
+    it('refuses to start without --enable-attachment-urls', async () => {
+      const [port] = await reserveFreePorts(1);
+      await expect(
+        start({ http: `127.0.0.1:${port}`, uploadSessionHandles: true })
+      ).rejects.toThrow(/--upload-session-handles requires --enable-attachment-urls/);
+      await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow();
+    });
+
+    it('refuses to start without a dedicated --attachment-port', async () => {
+      const [port] = await reserveFreePorts(1);
+      process.env.MS365_MCP_ATTACHMENT_URL_BASE = `http://127.0.0.1:${port}`;
+      await expect(
+        start({ http: `127.0.0.1:${port}`, enableAttachmentUrls: true, uploadSessionHandles: true })
+      ).rejects.toThrow(/--upload-session-handles requires --attachment-port/);
+      await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow();
+    });
+  });
+
   describe('shutdown', () => {
     it('closes both listeners', async () => {
       const [mcpPort, attachmentPort] = await reserveFreePorts(2);

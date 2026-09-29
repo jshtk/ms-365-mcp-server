@@ -7,6 +7,7 @@ import GraphClient from './graph-client.js';
 import { isDestructiveOperation } from './lib/destructive-ops.js';
 import { describePathParam } from './lib/path-params.js';
 import { getAttachmentMinting } from './lib/attachment-minting.js';
+import { swapUploadUrlForHandle } from './lib/upload-session-handles.js';
 import {
   buildAttachmentUrl,
   isPlainGraphPath,
@@ -2719,7 +2720,14 @@ async function executeGraphTool(
     // Projecting means parsing the body, and under --toon JSON.parse would throw and
     // leave the response untrimmed. Same reason the merge below forces JSON (#560).
     const willProject = requestedSelect.length > 0 && params.excludeResponse !== true;
-    if (mergePages || willProject) {
+    // HTK --upload-session-handles: create-upload-session's uploadUrl is swapped for a
+    // short single-use handle below, which needs a parseable body even under --toon.
+    const uploadHandleMinting =
+      tool.alias === 'create-upload-session' ? getAttachmentMinting() : null;
+    const uploadHandles = uploadHandleMinting?.uploadSessions
+      ? { store: uploadHandleMinting.uploadSessions, base: uploadHandleMinting.config.base }
+      : null;
+    if (mergePages || willProject || uploadHandles) {
       options.forceJsonOutput = true;
     }
 
@@ -2877,6 +2885,35 @@ async function executeGraphTool(
         response.content[0].text = graphClient.serialize(applyProjection(parsed));
       } catch {
         // Body was not JSON after all; nothing to project.
+      }
+    }
+
+    // HTK --upload-session-handles: the real uploadUrl (with its tempauth credential) never
+    // leaves this process through the tool result; it waits in memory for one redemption on
+    // the attachment listener. Fails closed: no handle means an error, never the real URL.
+    if (uploadHandles && !response?.isError && response?.content?.[0]?.text) {
+      const swapped = swapUploadUrlForHandle(
+        response.content[0].text,
+        uploadHandles.store,
+        uploadHandles.base
+      );
+      if (swapped.ok) {
+        response.content[0].text = graphClient.serialize(swapped.body);
+        const realUrl = swapped.realUrl;
+        const headers = response._meta?.headers as Record<string, unknown> | undefined;
+        if (realUrl && headers && typeof headers === 'object') {
+          for (const [name, value] of Object.entries(headers)) {
+            if (typeof value === 'string' && value.includes(realUrl)) delete headers[name];
+          }
+        }
+        logger.info('create-upload-session: uploadUrl replaced by a single-use handle');
+      } else {
+        logger.warn(`create-upload-session: ${swapped.error}`);
+        response = {
+          content: [{ type: 'text', text: JSON.stringify({ error: swapped.error }) }],
+          _meta: response._meta,
+          isError: true,
+        };
       }
     }
 
