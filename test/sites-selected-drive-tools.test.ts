@@ -18,6 +18,7 @@ const DRIVE_ITEM_TOOLS = [
   'move-rename-onedrive-item',
   'copy-drive-item',
   'list-drive-item-versions',
+  'share-drive-item',
 ];
 const enabledTools = `^(${DRIVE_ITEM_TOOLS.join('|')})$`;
 
