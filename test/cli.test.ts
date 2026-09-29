@@ -243,6 +243,43 @@ describe('CLI Module', () => {
     });
   });
 
+  // HTK: request-identity-bound minting is opt-in only.
+  describe('--mint-with-request-identity / MS365_MCP_MINT_WITH_REQUEST_IDENTITY', () => {
+    const prev = process.env.MS365_MCP_MINT_WITH_REQUEST_IDENTITY;
+
+    afterEach(() => {
+      if (prev === undefined) delete process.env.MS365_MCP_MINT_WITH_REQUEST_IDENTITY;
+      else process.env.MS365_MCP_MINT_WITH_REQUEST_IDENTITY = prev;
+    });
+
+    it('is off by default', () => {
+      delete process.env.MS365_MCP_MINT_WITH_REQUEST_IDENTITY;
+      commanderMocks.mockCommand.opts.mockReturnValue({ http: '3000' });
+      expect(parseArgs().mintWithRequestIdentity).toBeFalsy();
+    });
+
+    it('is enabled by the CLI flag', () => {
+      delete process.env.MS365_MCP_MINT_WITH_REQUEST_IDENTITY;
+      commanderMocks.mockCommand.opts.mockReturnValue({
+        http: '3000',
+        mintWithRequestIdentity: true,
+      });
+      expect(parseArgs().mintWithRequestIdentity).toBe(true);
+    });
+
+    it.each(['true', '1'])('is enabled by the env var set to %s', (value) => {
+      process.env.MS365_MCP_MINT_WITH_REQUEST_IDENTITY = value;
+      commanderMocks.mockCommand.opts.mockReturnValue({ http: '3000' });
+      expect(parseArgs().mintWithRequestIdentity).toBe(true);
+    });
+
+    it.each(['false', '0', ''])('stays off for env value %j', (value) => {
+      process.env.MS365_MCP_MINT_WITH_REQUEST_IDENTITY = value;
+      commanderMocks.mockCommand.opts.mockReturnValue({ http: '3000' });
+      expect(parseArgs().mintWithRequestIdentity).toBeFalsy();
+    });
+  });
+
   describe('--attachment-port / MS365_MCP_ATTACHMENT_PORT', () => {
     const prev = process.env.MS365_MCP_ATTACHMENT_PORT;
 

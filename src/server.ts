@@ -487,6 +487,15 @@ class MicrosoftGraphServer {
     // belief intact while the route stayed on the MCP port -- the exact
     // arrangement the flag exists to prevent -- so this refuses to start in
     // every mode rather than only in the one where it would have worked.
+    // HTK --mint-with-request-identity: meaningless without the feature it modifies, and an
+    // operator who set it believes transcripts can be minted. Refuse, like --attachment-port.
+    if (this.options.mintWithRequestIdentity && !this.options.enableAttachmentUrls) {
+      throw new Error(
+        '--mint-with-request-identity requires --enable-attachment-urls: on its own there is ' +
+          'nothing to mint. Pass both, or neither (MS365_MCP_MINT_WITH_REQUEST_IDENTITY).'
+      );
+    }
+
     const attachmentPort = parseAttachmentPortOption(this.options.attachmentPort);
     if (attachmentPort !== null && !this.options.enableAttachmentUrls) {
       throw new Error(
@@ -1102,7 +1111,15 @@ class MicrosoftGraphServer {
       // from CLI options got --obo backwards and missed MS365_MCP_OAUTH_TOKEN entirely.
       const mintingAlwaysRefused =
         this.authManager?.isOAuthModeEnabled() === true || !this.options.trustProxyAuth;
-      if (attachmentConfig && mintingAlwaysRefused) {
+      const mintWithRequestIdentity = Boolean(this.options.mintWithRequestIdentity);
+      if (attachmentConfig && mintingAlwaysRefused && mintWithRequestIdentity) {
+        logger.info(
+          '--mint-with-request-identity is on: when Graph identity comes from the request, ' +
+            'get-download-url mints single-use URLs for meeting recordings, transcript content ' +
+            "and $value byte endpoints, each bound to the caller's own access token (memory only, " +
+            'wiped on redemption or expiry). Redemption fetches with exactly that token.'
+        );
+      } else if (attachmentConfig && mintingAlwaysRefused) {
         logger.warn(
           '--enable-attachment-urls is on, but this server takes its Graph identity from the ' +
             'request in plain --http mode, and minting is refused whenever it does (the URL is ' +
@@ -1114,7 +1131,11 @@ class MicrosoftGraphServer {
       let attachmentApp: express.Express | null = null;
       if (attachmentConfig) {
         const ticketStore = new AttachmentTicketStore(attachmentConfig.ttlSeconds);
-        configureAttachmentMinting({ store: ticketStore, config: attachmentConfig });
+        configureAttachmentMinting({
+          store: ticketStore,
+          config: attachmentConfig,
+          mintWithRequestIdentity,
+        });
 
         // Where the route goes.
         //

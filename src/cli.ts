@@ -54,6 +54,10 @@ program
     'HTTP mode only. Let get-download-url mint a short-TTL, single-use URL served by this server for Graph byte resources that expose no pre-authenticated URL of their own (mail and event attachments, meeting recordings, other $value endpoints). Requires MS365_MCP_ATTACHMENT_URL_BASE and MS365_MCP_ATTACHMENT_URL_KEY (or _KEY_FILE)'
   )
   .option(
+    '--mint-with-request-identity',
+    'HTK. With --enable-attachment-urls in plain --http/OAuth mode: mint single-use URLs for meeting recordings, meeting transcript content and other $value byte endpoints even though Graph identity comes from the request, by binding the own access token of the caller to the ticket (memory only, wiped on redemption or expiry). Redemption fetches with exactly that token, never the server token cache. Off by default. Equivalent env var: MS365_MCP_MINT_WITH_REQUEST_IDENTITY=true.'
+  )
+  .option(
     '--attachment-port <port>',
     'HTTP mode only. Serve the attachment download route on its own listener on this port instead of on the MCP app, so a caller that can fetch attachments cannot also reach /mcp. Requires --enable-attachment-urls, and MS365_MCP_ATTACHMENT_URL_BASE must name this port. A separate port only isolates the two surfaces if they also bind separate interfaces — see --attachment-host. Equivalent env var: MS365_MCP_ATTACHMENT_PORT.'
   )
@@ -144,6 +148,8 @@ export interface CommandOptions {
   http?: string | boolean;
   enableAuthTools?: boolean;
   enableAttachmentUrls?: boolean;
+  /** HTK: bind the caller's token to minted tickets under request identity (opt-in). */
+  mintWithRequestIdentity?: boolean;
   /**
    * Raw, unvalidated port for the split attachment listener. A string when it
    * came from the command line or the environment; `server.ts` is what turns it
@@ -261,6 +267,15 @@ export function parseArgs(): CommandOptions {
   // the value is only meaningful together with --enable-attachment-urls and
   // --http, and both of those are decided in server.ts, so that is where it is
   // parsed and rejected -- one message, one place, whichever way it arrived.
+  // HTK: opt-in only. Checked against --enable-attachment-urls in server.ts, which refuses
+  // to start with this set and the feature off.
+  if (
+    !options.mintWithRequestIdentity &&
+    ['true', '1'].includes((process.env.MS365_MCP_MINT_WITH_REQUEST_IDENTITY ?? '').toLowerCase())
+  ) {
+    options.mintWithRequestIdentity = true;
+  }
+
   if (options.attachmentPort === undefined && process.env.MS365_MCP_ATTACHMENT_PORT !== undefined) {
     options.attachmentPort = process.env.MS365_MCP_ATTACHMENT_PORT;
   }

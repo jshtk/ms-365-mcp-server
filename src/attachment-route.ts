@@ -161,7 +161,12 @@ export function createAttachmentHandler(deps: AttachmentRouteDeps): Handler {
     let stream: Awaited<ReturnType<GraphClient['downloadStream']>>;
     try {
       let accessToken: string | undefined;
-      if (!deps.authManager.isOAuthModeEnabled()) {
+      if (ticket.boundAccessToken !== undefined) {
+        // HTK --mint-with-request-identity: the ticket was minted under the caller's own
+        // identity and carries that token. Use exactly it -- never the server's token
+        // cache -- so the bytes are fetched as the identity that asked for them.
+        accessToken = ticket.boundAccessToken;
+      } else if (!deps.authManager.isOAuthModeEnabled()) {
         accessToken = await deps.authManager.getTokenForAccount(ticket.accountName);
       }
       stream = await graphClient.downloadStream(ticket.target, { accessToken });
@@ -169,9 +174,11 @@ export function createAttachmentHandler(deps: AttachmentRouteDeps): Handler {
       // The target path is logged; the ticket id never is. The path is what an
       // operator needs to diagnose a failure and is not itself a capability --
       // reaching it still requires this server's Graph token.
-      logger.error(
-        `Attachment redemption failed for ${ticket.target}: ${(error as Error).message}`
-      );
+      let message = (error as Error).message;
+      // HTK: an upstream error body must never carry a bound caller token into the log.
+      if (ticket.boundAccessToken)
+        message = message.split(ticket.boundAccessToken).join('[redacted]');
+      logger.error(`Attachment redemption failed for ${ticket.target}: ${message}`);
       res.status(502).type('text/plain').send('Upstream fetch failed');
       return;
     }

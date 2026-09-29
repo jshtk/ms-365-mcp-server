@@ -9,6 +9,12 @@
  * authenticated GET of exactly one resource, which is the smallest grant that
  * makes an out-of-band fetch possible at all.
  *
+ * HTK exception, opt-in via `--mint-with-request-identity`: a ticket minted while
+ * Graph identity comes from the request carries that caller's access token, so
+ * redemption reads as the caller rather than as the server. The token sits only in
+ * this store's memory, is never part of the URL, is non-enumerable on the redeemed
+ * ticket, and is dropped with the ticket on redemption or expiry.
+ *
  * Memory-only, deliberately. Persisting tickets would mean a redeemable
  * capability surviving a restart, and re-reading it from disk is a second place
  * for it to leak; a ticket outliving the process it was minted in has no
@@ -92,6 +98,21 @@ export interface AttachmentTicket {
   readonly accountName: string | undefined;
   /** Epoch milliseconds after which this ticket is dead. */
   readonly expiresAtMs: number;
+  /**
+   * HTK (`--mint-with-request-identity`): the caller's own Graph access token when the
+   * ticket was minted under request identity. Redemption must fetch with exactly this
+   * token and never fall back to the server's token cache.
+   *
+   * Present on a redeemed ticket as a **non-enumerable** property only, so JSON,
+   * `util.inspect` and object spreads of a ticket never carry it. The store keeps it in
+   * a separate map that is cleared together with the ticket (redeem or expiry).
+   */
+  readonly boundAccessToken?: string;
+}
+
+export interface MintOptions {
+  /** Bind the caller's access token to this ticket (request-identity minting). */
+  boundAccessToken?: string;
 }
 
 /**
@@ -116,20 +137,29 @@ export class TicketStoreFullError extends Error {
 
 export class AttachmentTicketStore {
   private readonly tickets = new Map<string, AttachmentTicket>();
+  /** HTK: bound caller tokens, keyed by ticket id. Never logged, never serialized. */
+  private readonly boundTokens = new Map<string, string>();
 
   constructor(private readonly ttlSeconds: number) {}
 
   /** Drop every expired ticket. Called before each mint and each redemption. */
   private sweep(nowMs: number): void {
     for (const [id, ticket] of this.tickets) {
-      if (ticket.expiresAtMs <= nowMs) this.tickets.delete(id);
+      if (ticket.expiresAtMs <= nowMs) this.forget(id);
     }
+  }
+
+  /** Drop a ticket and any token bound to it, together. */
+  private forget(id: string): void {
+    this.tickets.delete(id);
+    this.boundTokens.delete(id);
   }
 
   mint(
     target: string,
     accountName: string | undefined,
-    nowMs: number = Date.now()
+    nowMs: number = Date.now(),
+    options: MintOptions = {}
   ): { id: string; expiresAtMs: number } {
     this.sweep(nowMs);
     if (this.tickets.size >= MAX_LIVE_TICKETS) {
@@ -138,6 +168,7 @@ export class AttachmentTicketStore {
     const id = randomBytes(TICKET_BYTES).toString('base64url');
     const expiresAtMs = nowMs + this.ttlSeconds * 1000;
     this.tickets.set(id, { target, accountName, expiresAtMs });
+    if (options.boundAccessToken) this.boundTokens.set(id, options.boundAccessToken);
     return { id, expiresAtMs };
   }
 
@@ -153,9 +184,19 @@ export class AttachmentTicketStore {
    */
   redeem(id: string, nowMs: number = Date.now()): AttachmentTicket | undefined {
     this.sweep(nowMs);
-    const ticket = this.tickets.get(id);
-    if (!ticket) return undefined;
-    this.tickets.delete(id);
+    const stored = this.tickets.get(id);
+    if (!stored) return undefined;
+    const boundAccessToken = this.boundTokens.get(id);
+    this.forget(id);
+    const ticket: AttachmentTicket = { ...stored };
+    if (boundAccessToken !== undefined) {
+      Object.defineProperty(ticket, 'boundAccessToken', {
+        value: boundAccessToken,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
+    }
     // No second expiry check here: `sweep` above ran against this same `nowMs`
     // and already removed anything at or past its expiry, so a surviving entry
     // is live by construction. A re-check would be unreachable code asserting a
@@ -170,7 +211,14 @@ export class AttachmentTicketStore {
     return this.tickets.size;
   }
 
+  /** HTK: number of live tickets carrying a bound caller token, for tests. */
+  boundTokenCount(nowMs: number = Date.now()): number {
+    this.sweep(nowMs);
+    return this.boundTokens.size;
+  }
+
   clear(): void {
     this.tickets.clear();
+    this.boundTokens.clear();
   }
 }

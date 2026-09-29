@@ -19,6 +19,12 @@ import type { AttachmentUrlConfig } from './attachment-url-config.js';
 export interface AttachmentMinting {
   store: AttachmentTicketStore;
   config: AttachmentUrlConfig;
+  /**
+   * HTK `--mint-with-request-identity`: when Graph identity comes from the request, mint
+   * anyway and bind the caller's own access token to the ticket, instead of refusing.
+   * Off unless explicitly enabled.
+   */
+  mintWithRequestIdentity?: boolean;
 }
 
 let current: AttachmentMinting | null = null;

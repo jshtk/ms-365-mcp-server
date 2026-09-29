@@ -1055,7 +1055,8 @@ export function isMintableMeetingBytePath(pathPart: string): boolean {
 async function mintDownloadUrl(
   target: string,
   accountParam: string | undefined,
-  authManager: AuthManager | undefined
+  authManager: AuthManager | undefined,
+  options: { allowRequestIdentity?: boolean } = {}
 ): Promise<CallToolResult | null> {
   const minting = getAttachmentMinting();
   if (!minting) return null;
@@ -1073,7 +1074,23 @@ async function mintDownloadUrl(
   // so minting would let a caller ask under one identity and have the bytes
   // fetched under another. Every other token site in this file pairs these two
   // checks (see the `getRequestTokens()` guards below); this one must too.
+  //
+  // HTK `--mint-with-request-identity`: instead of refusing, bind the caller's own
+  // access token to the ticket, so redemption fetches as exactly the identity that
+  // asked -- the same guarantee, kept by carrying the identity rather than by refusing.
+  // Only for the driveItem-less byte endpoints (call sites pass allowRequestIdentity),
+  // and the token lives only in the ticket store's memory until redemption or expiry.
+  let boundAccessToken: string | undefined;
   if (authManager?.isOAuthModeEnabled() || getRequestTokens()) {
+    if (options.allowRequestIdentity && minting.mintWithRequestIdentity) {
+      boundAccessToken =
+        getRequestTokens()?.accessToken ??
+        (authManager?.isOAuthModeEnabled()
+          ? ((await authManager.getToken().catch(() => null)) ?? undefined)
+          : undefined);
+    }
+  }
+  if (!boundAccessToken && (authManager?.isOAuthModeEnabled() || getRequestTokens())) {
     return {
       content: [
         {
@@ -1121,7 +1138,7 @@ async function mintDownloadUrl(
 
   let ticket: { id: string; expiresAtMs: number };
   try {
-    ticket = minting.store.mint(target, accountParam);
+    ticket = minting.store.mint(target, accountParam, undefined, { boundAccessToken });
   } catch (error) {
     if (error instanceof TicketStoreFullError) {
       return {
@@ -1562,7 +1579,9 @@ export const UTILITY_TOOLS: readonly UtilityTool[] = [
         /^\/groups\/[^/]+\/messages\/[^/]+\/attachments\//.test(pathPart) ||
         /^\/groups\/[^/]+\/events\/[^/]+\/attachments\//.test(pathPart)
       ) {
-        const minted = await mintDownloadUrl(pathPart, accountParam, authManager);
+        const minted = await mintDownloadUrl(pathPart, accountParam, authManager, {
+          allowRequestIdentity: true,
+        });
         if (minted) return minted;
         return {
           content: [
@@ -1580,7 +1599,9 @@ export const UTILITY_TOOLS: readonly UtilityTool[] = [
       // Recording and transcript content endpoints return authenticated bytes, not a
       // pre-authenticated URL.
       if (isMintableMeetingBytePath(pathPart)) {
-        const minted = await mintDownloadUrl(pathPart, accountParam, authManager);
+        const minted = await mintDownloadUrl(pathPart, accountParam, authManager, {
+          allowRequestIdentity: true,
+        });
         if (minted) return minted;
         return {
           content: [
@@ -1597,7 +1618,9 @@ export const UTILITY_TOOLS: readonly UtilityTool[] = [
       }
       // Other /$value byte endpoints (profile photo, Teams hosted content) likewise have no URL.
       if (pathPart.endsWith('/$value')) {
-        const minted = await mintDownloadUrl(pathPart, accountParam, authManager);
+        const minted = await mintDownloadUrl(pathPart, accountParam, authManager, {
+          allowRequestIdentity: true,
+        });
         if (minted) return minted;
         return {
           content: [

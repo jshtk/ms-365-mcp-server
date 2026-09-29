@@ -571,6 +571,28 @@ describe('--attachment-port (split attachment listener)', () => {
         false
       );
     });
+
+    // HTK --mint-with-request-identity
+    it('does not warn with --mint-with-request-identity and says so accurately', async () => {
+      const warnings = await warningsFor({ mintWithRequestIdentity: true });
+      expect(warnings.some((w) => WARNING.test(w))).toBe(false);
+      const infos = vi.mocked(logger.info).mock.calls.map(([message]) => String(message));
+      expect(infos.some((m) => /bound to the caller's own access token/.test(m))).toBe(true);
+      expect(getAttachmentMinting()?.mintWithRequestIdentity).toBe(true);
+    });
+
+    it('leaves request-identity minting off by default', async () => {
+      await warningsFor({});
+      expect(getAttachmentMinting()?.mintWithRequestIdentity).toBeFalsy();
+    });
+
+    it('refuses to start with --mint-with-request-identity but no --enable-attachment-urls', async () => {
+      const [port] = await reserveFreePorts(1);
+      await expect(
+        start({ http: `127.0.0.1:${port}`, mintWithRequestIdentity: true })
+      ).rejects.toThrow(/--mint-with-request-identity requires --enable-attachment-urls/);
+      await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow();
+    });
   });
 
   describe('shutdown', () => {
