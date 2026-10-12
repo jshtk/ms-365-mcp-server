@@ -69,6 +69,8 @@ vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({
 import logger from '../src/logger.js';
 
 const MAIL_ATTACHMENT = '/me/messages/AAA/attachments/BBB/$value';
+// HTK: request-identity minting excludes mail attachments, so tokens minted over /mcp use a recording.
+const RECORDING = '/me/onlineMeetings/AAA/recordings/BBB/content';
 const ATTACHMENT_BODY = 'PDFBYTES';
 
 /**
@@ -566,7 +568,7 @@ describe('--attachment-port (split attachment listener)', () => {
           jsonrpc: '2.0',
           id: 1,
           method: 'tools/call',
-          params: { name: 'get-download-url', arguments: { target: MAIL_ATTACHMENT } },
+          params: { name: 'get-download-url', arguments: { target: RECORDING } },
         }),
       });
       expect(response.status).toBe(200);

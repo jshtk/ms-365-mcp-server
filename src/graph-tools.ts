@@ -1171,6 +1171,36 @@ async function mintUploadUrl(
   };
 }
 
+const TRANSCRIPT_CONTENT_PATH =
+  /^(\/me|\/users\/[^/]+)\/onlineMeetings\/[^/]+\/transcripts\/[^/]+\/content$/;
+
+/**
+ * HTK: Accept header a minted ticket must redeem with. Graph answers transcript
+ * `/content` requested with fetch's default wildcard Accept with 400 "Invalid format
+ * <wildcard> specified." (pilot 29.09.2026), so transcripts get `text/vtt` -- the same
+ * default get-meeting-transcript-content uses. Everything else keeps no override.
+ */
+export function mintAcceptFor(target: string): string | undefined {
+  return TRANSCRIPT_CONTENT_PATH.test(target) ? 'text/vtt' : undefined;
+}
+
+const ATTACHMENT_PATHS = [
+  /^(\/me|\/users\/[^/]+)\/(messages|events)\/[^/]+\/attachments\//,
+  /^\/groups\/[^/]+\/(messages|events)\/[^/]+\/attachments\//,
+];
+
+/**
+ * HTK policy: which targets may be minted under the caller's own token. Approved are
+ * meeting recordings and transcripts and other driveItem-less `$value` endpoints. Mail,
+ * event and group attachments and the driveItem `/content` fallback keep the refusal
+ * that applied before upstream minted under request identity (#692); callers then get
+ * the usual "use download-bytes" answer.
+ */
+export function isRequestIdentityMintable(target: string): boolean {
+  if (ATTACHMENT_PATHS.some((re) => re.test(target))) return false;
+  return isMintableMeetingBytePath(target) || target.endsWith('/$value');
+}
+
 async function mintDownloadUrl(
   target: string,
   accountParam: string | undefined,
@@ -1199,6 +1229,8 @@ async function mintDownloadUrl(
       (await authManager?.getToken().catch(() => null)) ??
       undefined)
     : undefined;
+  // HTK: keep the pre-#692 refusal for anything outside the approved byte endpoints.
+  if (identityFromRequest && !isRequestIdentityMintable(target)) return null;
   if (identityFromRequest && !requestToken) {
     return {
       content: [
@@ -1247,9 +1279,10 @@ async function mintDownloadUrl(
 
   let ticket: { id: string; expiresAtMs: number };
   try {
+    const download = { accept: mintAcceptFor(target) };
     ticket = requestToken
-      ? minting.store.mintWithToken(target, requestToken)
-      : minting.store.mint(target, accountParam);
+      ? minting.store.mintWithToken(target, requestToken, undefined, download)
+      : minting.store.mint(target, accountParam, undefined, download);
   } catch (error) {
     if (error instanceof TicketStoreFullError) {
       return {
