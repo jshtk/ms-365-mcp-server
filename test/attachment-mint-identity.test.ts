@@ -26,6 +26,9 @@ import { createAttachmentHandler } from '../src/attachment-route.js';
 describe('a minted ticket is redeemed as the identity that asked', () => {
   const tool = UTILITY_TOOLS.find((t) => t.name === 'get-download-url')!;
   const MAIL_ATTACHMENT = '/me/messages/AAA/attachments/BBB/$value';
+  // HTK: mail attachments are not minted under request identity (see
+  // htk-request-identity-mint.test.ts), so the identity tests use a recording.
+  const REQUEST_IDENTITY_TARGET = '/me/onlineMeetings/AAA/recordings/BBB/content';
   let store: AttachmentTicketStore;
 
   function ctx(overrides: Record<string, unknown> = {}) {
@@ -73,26 +76,26 @@ describe('a minted ticket is redeemed as the identity that asked', () => {
 
   it('keeps the request token in the ticket in bearer/OBO mode', async () => {
     const result = await requestContext.run({ accessToken: 'CALLER_TOKEN' }, () =>
-      tool.execute({ target: MAIL_ATTACHMENT }, ctx())
+      tool.execute({ target: REQUEST_IDENTITY_TARGET }, ctx())
     );
     expect(result.isError).toBeFalsy();
     expect(store.redeem(ticketIdOf(result))).toMatchObject({
       kind: 'request-token',
       accessToken: 'CALLER_TOKEN',
-      target: MAIL_ATTACHMENT,
+      target: REQUEST_IDENTITY_TARGET,
     });
   });
 
   it('never puts the token in the URL or anywhere else in the response', async () => {
     const result = await requestContext.run({ accessToken: 'CALLER_TOKEN' }, () =>
-      tool.execute({ target: MAIL_ATTACHMENT }, ctx())
+      tool.execute({ target: REQUEST_IDENTITY_TARGET }, ctx())
     );
     expect(JSON.stringify(result)).not.toContain('CALLER_TOKEN');
   });
 
   it('keeps the env token in the ticket in MS365_MCP_OAUTH_TOKEN mode', async () => {
     const result = await tool.execute(
-      { target: MAIL_ATTACHMENT },
+      { target: REQUEST_IDENTITY_TARGET },
       ctx({ isOAuthModeEnabled: () => true, getToken: async () => 'ENV_TOKEN' })
     );
     expect(store.redeem(ticketIdOf(result))).toMatchObject({
@@ -104,7 +107,7 @@ describe('a minted ticket is redeemed as the identity that asked', () => {
   it('prefers the request token over the env token, as download-bytes does', async () => {
     const result = await requestContext.run({ accessToken: 'CALLER_TOKEN' }, () =>
       tool.execute(
-        { target: MAIL_ATTACHMENT },
+        { target: REQUEST_IDENTITY_TARGET },
         ctx({ isOAuthModeEnabled: () => true, getToken: async () => 'ENV_TOKEN' })
       )
     );
@@ -137,7 +140,7 @@ describe('a minted ticket is redeemed as the identity that asked', () => {
 
   it('redeems with the minting token and never asks the cache', async () => {
     const result = await requestContext.run({ accessToken: 'CALLER_TOKEN' }, () =>
-      tool.execute({ target: MAIL_ATTACHMENT }, ctx())
+      tool.execute({ target: REQUEST_IDENTITY_TARGET }, ctx())
     );
 
     const downloadStream = vi.fn(async () => ({
@@ -180,7 +183,9 @@ describe('a minted ticket is redeemed as the identity that asked', () => {
     );
 
     expect(status).toBe(200);
-    expect(downloadStream).toHaveBeenCalledWith(MAIL_ATTACHMENT, { accessToken: 'CALLER_TOKEN' });
+    expect(downloadStream).toHaveBeenCalledWith(REQUEST_IDENTITY_TARGET, {
+      accessToken: 'CALLER_TOKEN',
+    });
     expect(getToken).not.toHaveBeenCalled();
     expect(getTokenForAccount).not.toHaveBeenCalled();
   });

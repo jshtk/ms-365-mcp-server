@@ -202,7 +202,11 @@ export function createAttachmentHandler(deps: AttachmentRouteDeps): Handler {
       // downloadStream falls back to AuthManager when handed no token, which for a
       // request-token ticket would fetch as whatever account this server has cached.
       if (!accessToken) throw new Error('No access token for this ticket');
-      stream = await graphClient.downloadStream(ticket.target, { accessToken });
+      stream = await graphClient.downloadStream(ticket.target, {
+        accessToken,
+        // HTK: transcript tickets carry text/vtt; Graph rejects fetch's default wildcard Accept.
+        ...(ticket.accept ? { headers: { Accept: ticket.accept } } : {}),
+      });
     } catch (error) {
       // The target path is logged; the ticket id and token never are. The path is
       // what an operator needs to diagnose a failure and is not itself a capability --

@@ -152,7 +152,16 @@ export type AttachmentTicket = TicketIdentity &
     readonly target: string;
     /** Epoch milliseconds after which this ticket is dead. */
     readonly expiresAtMs: number;
+    /**
+     * HTK: explicit Accept header for the redemption fetch. Graph refuses transcript
+     * `/content` with fetch's default wildcard Accept ("Invalid format ... specified."),
+     * so transcript tickets carry `text/vtt`. Unset for everything else (unchanged).
+     */
+    readonly accept?: string;
   };
+
+/** HTK: per-ticket redemption options a download minting site may supply. */
+export type DownloadOptions = { readonly accept?: string };
 
 /** Upload metadata a minting tool supplies; the store adds nothing to it. */
 export type UploadSpec = { readonly name: string; readonly contentType: string };
@@ -194,7 +203,8 @@ export class AttachmentTicketStore {
     target: string,
     identity: TicketIdentity,
     nowMs: number,
-    purpose: TicketPurpose = { purpose: 'download' }
+    purpose: TicketPurpose = { purpose: 'download' },
+    download: DownloadOptions = {}
   ): { id: string; expiresAtMs: number } {
     this.sweep(nowMs);
     if (this.tickets.size >= MAX_LIVE_TICKETS) {
@@ -202,7 +212,13 @@ export class AttachmentTicketStore {
     }
     const id = randomBytes(TICKET_BYTES).toString('base64url');
     const expiresAtMs = nowMs + this.ttlSeconds * 1000;
-    this.tickets.set(id, { ...identity, ...purpose, target, expiresAtMs });
+    this.tickets.set(id, {
+      ...identity,
+      ...purpose,
+      target,
+      expiresAtMs,
+      ...(download.accept ? { accept: download.accept } : {}),
+    });
     return { id, expiresAtMs };
   }
 
@@ -211,12 +227,16 @@ export class AttachmentTicketStore {
     target: string,
     accountName: string | undefined,
     nowMs: number = Date.now(),
-    probe: DownloadProbe = {}
+    probe: DownloadProbe = {},
+    download: DownloadOptions = {}
   ): { id: string; expiresAtMs: number } {
-    return this.add(target, { kind: 'server-account', accountName }, nowMs, {
-      purpose: 'download',
-      ...probe,
-    });
+    return this.add(
+      target,
+      { kind: 'server-account', accountName },
+      nowMs,
+      { purpose: 'download', ...probe },
+      download
+    );
   }
 
   /** Mint a ticket redeemed with `accessToken` and nothing else. */
@@ -224,13 +244,17 @@ export class AttachmentTicketStore {
     target: string,
     accessToken: string,
     nowMs: number = Date.now(),
-    probe: DownloadProbe = {}
+    probe: DownloadProbe = {},
+    download: DownloadOptions = {}
   ): { id: string; expiresAtMs: number } {
     if (!accessToken) throw new Error('A request-token ticket needs a token');
-    return this.add(target, { kind: 'request-token', accessToken }, nowMs, {
-      purpose: 'download',
-      ...probe,
-    });
+    return this.add(
+      target,
+      { kind: 'request-token', accessToken },
+      nowMs,
+      { purpose: 'download', ...probe },
+      download
+    );
   }
 
   /** Mint an upload ticket attached as this server's own token for `accountName`. */

@@ -99,9 +99,11 @@ describe('signed attachment download keeps the attachment content type and name'
     expect(headers['content-disposition']).toBe('attachment; filename="report.pdf"');
   });
 
-  it('probes with the request token when identity comes from the request', async () => {
+  // HTK: under request identity mail attachments are refused (isRequestIdentityMintable),
+  // so the probe must not reach Graph with the caller's token either.
+  it('does not probe a mail attachment under request identity (HTK policy)', async () => {
     const makeRequest = vi.fn(async () => ({ name: 'a.pdf', contentType: 'application/pdf' }));
-    await requestContext.run({ accessToken: 'CALLER_TOKEN' } as never, () =>
+    const result = await requestContext.run({ accessToken: 'CALLER_TOKEN' } as never, () =>
       tool.execute({ target: MAIL }, {
         graphClient: { makeRequest } as never,
         authManager: authManager as never,
@@ -109,7 +111,8 @@ describe('signed attachment download keeps the attachment content type and name'
         accountNames: [],
       } as never)
     );
-    expect(makeRequest).toHaveBeenCalledWith(META, { accessToken: 'CALLER_TOKEN' });
+    expect(makeRequest).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).toMatch(/download-bytes/);
   });
 
   it("keeps Graph's own type and disposition when it sent them", async () => {
