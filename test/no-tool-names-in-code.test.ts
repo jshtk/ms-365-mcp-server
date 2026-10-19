@@ -16,6 +16,8 @@ const ALLOWED: Record<string, string[]> = {
     'add-calendar-event-attachment',
     'add-shared-mailbox-attachment',
     'add-mail-attachment',
+    // HTK --upload-session-handles: swaps create-upload-session's uploadUrl for a handle
+    'create-upload-session',
   ],
 };
 
